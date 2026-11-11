@@ -1,3 +1,9 @@
+#if Geometry
+    public import Direction
+    public import Geometry
+    public import Numeric
+#endif
+
 public struct Raster<Pixel> {
     public let width: Cardinal
     public let height: Cardinal
@@ -327,6 +333,28 @@ extension Raster {
         return try mix(first, self[column: column + 1, row: row, edge: edge], fraction)
     }
 
+    /// `value` rounded to a whole number and held between two bounds; the lower bound for a value that is not a number.
+    @inlinable
+    internal static func whole<Scalar: BinaryFloatingPoint>(
+        _ value: Scalar,
+        _ rule: FloatingPointRoundingRule,
+        from lower: Int,
+        to upper: Int
+    ) -> Int {
+        let rounded = value.rounded(rule)
+        guard rounded > Scalar(lower) else { return lower }
+        guard rounded < Scalar(upper) else { return upper }
+        return Int(rounded)
+    }
+
+    /// Where a region starts along one axis, as a signed word that leaves room to add the region's extent.
+    @inlinable
+    internal static func origin(_ position: Ordinal) -> Int {
+        let limit = Int.max / 4
+        let value = Int(bitPattern: position)
+        return value >= 0 && value < limit ? value : limit
+    }
+
     @inlinable
     internal static func floor<Scalar: BinaryFloatingPoint>(_ value: Scalar) -> Int {
         precondition(value.isFinite, "A sample position is finite")
@@ -363,3 +391,132 @@ extension Raster {
         return 10 * Scalar.log10(peak * peak / mean)
     }
 }
+
+extension Raster {
+    /// For each pixel of `region`, `pixel` of the nearest triangle that takes the pixel's centre, and `empty`
+    /// where none does. A triangle is three points whose x and y are raster positions and whose z is depth.
+    /// `pixel` is given the triangle's position in the sequence, the centre's barycentric weights on the
+    /// triangle's three corners, and the depth those weights give.
+    @inlinable
+    public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
+        of triangles: some Sequence<InlineArray<3, Point<3, Scalar>>>,
+        in region: Region,
+        empty: Pixel,
+        _ pixel: (_ triangle: Ordinal, _ weights: InlineArray<3, Scalar>, _ depth: Scalar) throws(Failure) -> Pixel
+    ) throws(Failure) -> Self {
+        let columns = Int(bitPattern: region.width)
+        let rows = Int(bitPattern: region.height)
+        precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
+        let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
+        precondition(!overflow, "A raster's pixel count fits a signed word")
+        let left = origin(region.x)
+        let top = origin(region.y)
+        let half: Scalar = 1 / 2
+        var facets: [Facet<Scalar>?] = []
+        var winners = [Int](repeating: -1, count: count)
+        var depths = [Scalar](repeating: 0, count: count)
+        if count > 0 {
+            for triangle in triangles {
+                let facet = Facet(triangle)
+                facets.append(facet)
+                guard let facet else { continue }
+                let firstColumn = whole(facet.low.x - half, .down, from: left, to: left + columns)
+                let endColumn = whole(facet.high.x - half, .up, from: left - 1, to: left + columns - 1) + 1
+                let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
+                let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
+                guard firstColumn < endColumn, firstRow < endRow else { continue }
+                for row in firstRow..<endRow {
+                    let base = (row - top) * columns - left
+                    for column in firstColumn..<endColumn {
+                        guard let sample = facet.sample(x: Scalar(column) + half, y: Scalar(row) + half) else { continue }
+                        if winners[base + column] < 0 || sample.depth < depths[base + column] {
+                            winners[base + column] = facets.count - 1
+                            depths[base + column] = sample.depth
+                        }
+                    }
+                }
+            }
+        }
+        return try filled(columns: columns, rows: rows) { (column, row) throws(Failure) in
+            let winner = winners[row * columns + column]
+            guard winner >= 0, let facet = facets[winner],
+                let sample = facet.sample(x: Scalar(left + column) + half, y: Scalar(top + row) + half)
+            else { return empty }
+            return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
+        }
+    }
+
+    /// `fragments(of:in:empty:_:)` over the whole raster of the given size.
+    @inlinable
+    public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
+        of triangles: some Sequence<InlineArray<3, Point<3, Scalar>>>,
+        width: Cardinal,
+        height: Cardinal,
+        empty: Pixel,
+        _ pixel: (_ triangle: Ordinal, _ weights: InlineArray<3, Scalar>, _ depth: Scalar) throws(Failure) -> Pixel
+    ) throws(Failure) -> Self {
+        try fragments(of: triangles, in: Region(x: .zero, y: .zero, width: width, height: height), empty: empty, pixel)
+    }
+}
+
+#if Geometry
+    extension Raster where Pixel: BinaryFloatingPoint {
+        /// For each pixel of `region`, the part of its square that lies inside `path` under `rule`, from 0 to 1.
+        /// The path is in raster space, and curves are made straight to within `tolerance` first.
+        @inlinable
+        public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
+            of path: Geometry<Scalar, Space>.Path,
+            rule: Winding.Rule,
+            in region: Region,
+            tolerance: Geometry<Scalar, Space>.Length
+        ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
+            let outline = try path.flattened(tolerance: tolerance)
+            let columns = Int(bitPattern: region.width)
+            let rows = Int(bitPattern: region.height)
+            precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
+            let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
+            precondition(!overflow, "A raster's pixel count fits a signed word")
+            guard count > 0 else { return Self(width: region.width, height: region.height, valid: []) }
+            var sides: [Fill<Scalar>.Side] = []
+            for subpath in outline.subpaths {
+                var corners: [(x: Scalar, y: Scalar)] = [(subpath.startPoint[0], subpath.startPoint[1])]
+                for segment in subpath.segments {
+                    guard case .line(let line) = segment else { continue }
+                    corners.append((line.start[0], line.start[1]))
+                    corners.append((line.end[0], line.end[1]))
+                }
+                guard corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite }), var previous = corners.last else { continue }
+                for corner in corners {
+                    if let side = Fill<Scalar>.Side(from: previous, to: corner) { sides.append(side) }
+                    previous = corner
+                }
+            }
+            let pixels = Fill<Scalar>.coverage(
+                of: sides,
+                rule: rule,
+                left: origin(region.x),
+                top: origin(region.y),
+                columns: columns,
+                rows: rows
+            )
+            return Self(width: region.width, height: region.height, valid: pixels)
+        }
+
+        /// `coverage(of:rule:in:tolerance:)` over the whole raster of the given size.
+        @inlinable
+        public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
+            of path: Geometry<Scalar, Space>.Path,
+            rule: Winding.Rule,
+            width: Cardinal,
+            height: Cardinal,
+            tolerance: Geometry<Scalar, Space>.Length
+        ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
+            try coverage(
+                of: path,
+                rule: rule,
+                in: Region(x: .zero, y: .zero, width: width, height: height),
+                tolerance: tolerance
+            )
+        }
+    }
+#endif

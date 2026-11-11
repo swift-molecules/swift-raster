@@ -3,3 +3,8 @@
 @_exported public import Matrix
 @_exported public import Ordinal
 @_exported public import Point
+
+#if Geometry
+    @_exported public import Direction
+    @_exported public import Geometry
+#endif
