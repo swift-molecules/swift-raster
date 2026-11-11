@@ -1,0 +1,9 @@
+description: "A typed pixel buffer for Swift, generic over the pixel: storage, regions, sampling, resampling, warping and separable convolution, with the per-pixel operation supplied by the caller."
+topics:
+  - molecules
+  - raster
+  - image
+  - graphics
+homepage: "https://swift-institute.org"
+readme:
+  family: E
