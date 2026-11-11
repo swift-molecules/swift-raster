@@ -26,9 +26,11 @@ extension Raster {
             let first = triangle[0]
             var second = triangle[1]
             var third = triangle[2]
-            for index in 0..<3 {
-                guard triangle[index].x.isFinite, triangle[index].y.isFinite, triangle[index].z.isFinite else { return nil }
-            }
+            guard
+                triangle.indices.allSatisfy({ index in
+                    triangle[index].x.isFinite && triangle[index].y.isFinite && triangle[index].z.isFinite
+                })
+            else { return nil }
             let turn = (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
             guard turn > 0 || turn < 0 else { return nil }
             exchanged = turn < 0

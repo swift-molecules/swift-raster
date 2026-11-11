@@ -67,7 +67,8 @@
             if end > first {
                 let rate = height / (high - low)
                 if high > low, rate.isFinite {
-                    for column in first..<end {
+                    var column = first
+                    while column < end {
                         let left = Swift.max(low, Scalar(column))
                         let right = Swift.min(high, Scalar(column + 1))
                         let entered = (left - low) * rate
@@ -75,6 +76,7 @@
                         let inside = entered + (departed - entered) * (Scalar(column + 1) - (left + right) / 2)
                         area[column] += sign > 0 ? inside : -inside
                         touched[column] = true
+                        column += 1
                     }
                 } else {
                     area[first] += signed * (Scalar(first + 1) - low)
@@ -225,7 +227,6 @@
                 highest = Swift.max(highest, side.high)
                 deepest = Swift.max(deepest, side.bottom.y)
             }
-            // A side wholly right of the region changes nothing left of itself.
             kept.removeAll { $0.low >= wall }
             guard !kept.isEmpty else { return output }
             kept.sort { $0.top.y < $1.top.y }
@@ -237,7 +238,8 @@
 
             var fill = Self(rule: rule, origin: firstColumn, span: endColumn - firstColumn)
             var next = 0
-            for row in firstRow..<endRow {
+            var row = firstRow
+            while row < endRow {
                 let upper = Scalar(row)
                 let lower = Scalar(row + 1)
                 fill.active.removeAll { $0.bottom.y <= upper }
@@ -245,9 +247,11 @@
                     if kept[next].bottom.y > upper { fill.active.append(kept[next]) }
                     next += 1
                 }
-                guard !fill.active.isEmpty else { continue }
-                fill.sweep(row)
-                fill.write(into: &output, at: (row - top) * columns + (firstColumn - left))
+                if !fill.active.isEmpty {
+                    fill.sweep(row)
+                    fill.write(into: &output, at: (row - top) * columns + (firstColumn - left))
+                }
+                row += 1
             }
             return output
         }

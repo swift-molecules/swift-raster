@@ -399,7 +399,7 @@ extension Raster {
     /// triangle's three corners, and the depth those weights give.
     @inlinable
     public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
-        of triangles: some Sequence<InlineArray<3, Point<3, Scalar>>>,
+        of triangles: some Swift::Sequence<InlineArray<3, Point<3, Scalar>>>,
         in region: Region,
         empty: Pixel,
         _ pixel: (_ triangle: Ordinal, _ weights: InlineArray<3, Scalar>, _ depth: Scalar) throws(Failure) -> Pixel
@@ -417,6 +417,7 @@ extension Raster {
         var depths = [Scalar](repeating: 0, count: count)
         if count > 0 {
             for triangle in triangles {
+                let number = facets.count
                 let facet = Facet(triangle)
                 facets.append(facet)
                 guard let facet else { continue }
@@ -425,15 +426,20 @@ extension Raster {
                 let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
                 let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
                 guard firstColumn < endColumn, firstRow < endRow else { continue }
-                for row in firstRow..<endRow {
+                var row = firstRow
+                while row < endRow {
                     let base = (row - top) * columns - left
-                    for column in firstColumn..<endColumn {
-                        guard let sample = facet.sample(x: Scalar(column) + half, y: Scalar(row) + half) else { continue }
-                        if winners[base + column] < 0 || sample.depth < depths[base + column] {
-                            winners[base + column] = facets.count - 1
+                    var column = firstColumn
+                    while column < endColumn {
+                        if let sample = facet.sample(x: Scalar(column) + half, y: Scalar(row) + half),
+                            winners[base + column] < 0 || sample.depth < depths[base + column]
+                        {
+                            winners[base + column] = number
                             depths[base + column] = sample.depth
                         }
+                        column += 1
                     }
+                    row += 1
                 }
             }
         }
@@ -449,7 +455,7 @@ extension Raster {
     /// `fragments(of:in:empty:_:)` over the whole raster of the given size.
     @inlinable
     public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
-        of triangles: some Sequence<InlineArray<3, Point<3, Scalar>>>,
+        of triangles: some Swift::Sequence<InlineArray<3, Point<3, Scalar>>>,
         width: Cardinal,
         height: Cardinal,
         empty: Pixel,

@@ -883,7 +883,7 @@ extension `Raster Tests`.`Triangles are sampled at pixel centres, nearest first`
             _ width: Cardinal,
             _ height: Cardinal,
             tolerance: Double = 0.01
-        ) throws -> Raster<Double> {
+        ) throws(Geo.Path.Error) -> Raster<Double> {
             try Raster<Double>.coverage(of: path, rule: rule, width: width, height: height, tolerance: .init(tolerance))
         }
 
@@ -1199,7 +1199,7 @@ extension `Raster Tests`.`Triangles are sampled at pixel centres, nearest first`
             #expect(part.width == 9 && part.height == 7)
             #expect(`Raster Tests`.close(part, cropped))
             let agree = part.zip(cropped) { ($0 == 1) == ($1 == 1) && ($0 == 0) == ($1 == 0) }
-            #expect(agree?.reduce(true) { $0 && $1 } == true)
+            #expect(agree?.pixels.allSatisfy { $0 } == true)
             #expect(cropped.pixels.contains(1) && cropped.pixels.contains(0))
 
             // Nothing of the path lies outside the region that encloses its bounding box.
