@@ -194,7 +194,7 @@ extension `Raster Tests` {
             #expect(raster.reduce("") { $0 + "\(Int($1))," } == "0,1,10,11,")
             #expect(raster.reduce(into: [Double]()) { $0.append($1) } == raster.pixels)
             #expect(raster.reduce(0, +) == 22)
-            #expect(Raster(width: 0, height: 0, repeating: 1.0).reduce(5, +) == 5)
+            #expect(Raster<Double>(width: 0, height: 0, repeating: 1).reduce(5, +) == 5)
             func refuse(_ sum: Double, _ pixel: Double) throws(Failure) -> Double { throw Failure() }
             #expect(throws: Failure()) { try raster.reduce(0, refuse) }
         }
