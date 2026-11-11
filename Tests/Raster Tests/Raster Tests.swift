@@ -583,3 +583,35 @@ extension `Raster Tests` {
         }
     }
 }
+
+extension `Raster Tests` {
+    @Suite
+    struct `Two rasters of one size are compared by their mean error` {}
+}
+
+extension `Raster Tests`.`Two rasters of one size are compared by their mean error` {
+    private static func squared(_ a: Double, _ b: Double) -> Double { (a - b) * (a - b) }
+
+    @Test
+    func `the mean error is the sum over pixels divided by their number`() throws {
+        let a = try Raster<Double>(width: 2, height: 2, pixels: [0, 1, 2, 3])
+        let b = try Raster<Double>(width: 2, height: 2, pixels: [0, 3, 2, 7])
+        #expect(a.mean(against: b, Self.squared) == 5)
+        #expect(a.mean(against: a, Self.squared) == 0)
+        #expect(a.mean(against: Raster<Double>(width: 4, height: 1, repeating: 0), Self.squared) == nil)
+        let empty = Raster<Double>(width: 0, height: 0, repeating: 0)
+        #expect(empty.mean(against: empty, Self.squared) == nil)
+    }
+
+    @Test
+    func `the ratio is ten log ten of the peak squared over the mean squared error`() throws {
+        let a = try Raster<Double>(width: 2, height: 1, pixels: [0, 0])
+        let b = try Raster<Double>(width: 2, height: 1, pixels: [25.5, 25.5])
+        #expect(a.psnr(against: b, peak: 255, squared: Self.squared) == 20)
+        #expect(a.psnr(against: b, peak: 2550, squared: Self.squared) == 40)
+        #expect(a.psnr(against: a, peak: 255, squared: Self.squared) == .infinity)
+        #expect(a.psnr(against: Raster<Double>(width: 1, height: 2, repeating: 0), peak: 255, squared: Self.squared) == nil)
+        let empty = Raster<Double>(width: 0, height: 0, repeating: 0)
+        #expect(empty.psnr(against: empty, peak: 255, squared: Self.squared) == .infinity)
+    }
+}
