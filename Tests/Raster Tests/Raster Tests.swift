@@ -1307,3 +1307,94 @@ extension `Raster Tests`.`Triangles are sampled at pixel centres, nearest first`
         }
     }
 #endif
+
+extension `Raster Tests` {
+    @Suite
+    struct `A cascade of boxes blurs in time that does not grow with its radius` {}
+}
+
+extension `Raster Tests`.`A cascade of boxes blurs in time that does not grow with its radius` {
+    fileprivate typealias Pair = SIMD2<Double>
+    fileprivate static let edges: [Raster<Pair>.Edge] = [.extend, .wrap, .mirror, .constant(Pair(0.1, 2))]
+
+    fileprivate static func varied(_ width: Cardinal, _ height: Cardinal) -> Raster<Pair> {
+        let plain = `Raster Tests`.varied(width, height)
+        return plain.map { Pair($0, 17 - $0 * $0 / 3) }
+    }
+
+    fileprivate static func mix(_ from: Pair, _ to: Pair, _ parameter: Double) -> Pair {
+        from + (to - from) * parameter
+    }
+
+    fileprivate static func distance(_ a: [Double], _ b: [Double]) -> Double {
+        let count = max(a.count, b.count)
+        func padded(_ weights: [Double]) -> [Double] {
+            let side = (count - weights.count) / 2
+            return [Double](repeating: 0, count: side) + weights + [Double](repeating: 0, count: side)
+        }
+        return zip(padded(a), padded(b)).reduce(0) { $0 + abs($1.0 - $1.1) }
+    }
+
+    @Test
+    func `A Gaussian cascade has the deviation's variance exactly, and reaches its passes times its radius plus one`() throws {
+        for deviation in [0.3, 1, 2, 2.84, 7.5, 30, 64] {
+            for count in [1, 3, 5] {
+                let cascade = try Raster<Pair>.Cascade<Double>.gaussian(deviation: deviation, count: count)
+                #expect(abs(cascade.variance - deviation * deviation) < 1e-9 * deviation * deviation)
+                #expect(cascade.end >= 0 && cascade.end < 1)
+                #expect(Int(bitPattern: cascade.reach) == count * (cascade.radius + 1))
+                let kernel = cascade.kernel
+                #expect(kernel.weights.count == 2 * Int(bitPattern: cascade.reach) + 1)
+                #expect(abs(kernel.weights.reduce(0, +) - 1) < 1e-12)
+            }
+        }
+        #expect(try Raster<Pair>.Cascade<Double>.gaussian(deviation: 0) == .identity)
+        #expect(throws: Raster<Pair>.Kernel<Double>.Error.weight) { try Raster<Pair>.Cascade<Double>.gaussian(deviation: -1) }
+        #expect(throws: Raster<Pair>.Kernel<Double>.Error.weight) { try Raster<Pair>.Cascade<Double>.gaussian(deviation: .infinity) }
+        #expect(throws: Raster<Pair>.Kernel<Double>.Error.weight) { try Raster<Pair>.Cascade<Double>.gaussian(deviation: 1, count: 0) }
+        #expect(throws: Raster<Pair>.Kernel<Double>.Error.weight) { try Raster<Pair>.Cascade<Double>(count: 1, radius: 1, end: 1.5) }
+    }
+
+    @Test
+    func `From a deviation of 2 on, five passes lie within 0.032 of the Gaussian kernel in total weight`() throws {
+        var deviation = 2.0
+        while deviation < 80 {
+            let cascade = try Raster<Pair>.Cascade<Double>.gaussian(deviation: deviation)
+            let gaussian = try Raster<Pair>.Kernel<Double>.gaussian(deviation: deviation)
+            #expect(Self.distance(cascade.kernel.weights, gaussian.weights) <= 0.032, "deviation \(deviation)")
+            deviation += 0.11
+        }
+    }
+
+    @Test
+    func `Smoothing equals convolving with the cascade's kernel, under every edge`() throws {
+        let raster = Self.varied(23, 17)
+        let across = try Raster<Pair>.Cascade<Double>.gaussian(deviation: 2.3)
+        let down = try Raster<Pair>.Cascade<Double>.gaussian(deviation: 1.1, count: 3)
+        for edge in Self.edges {
+            let smoothed = raster.smoothed(horizontal: across, vertical: down, edge: edge)
+            let convolved = raster.convolved(horizontal: across.kernel, vertical: down.kernel, edge: edge, mixing: Self.mix)
+            let worst = smoothed.zip(convolved) { a, b in max(abs(a.x - b.x), abs(a.y - b.y)) }?.reduce(0, max) ?? .infinity
+            #expect(worst < 1e-12, "\(edge)")
+        }
+    }
+
+    @Test
+    func `The identity cascade returns the raster, and a constant raster stays constant up to rounding`() throws {
+        let raster = Self.varied(9, 4)
+        #expect(raster.smoothed(horizontal: .identity, vertical: .identity, edge: .extend) == raster)
+        let constant = Raster(width: 40, height: 30, repeating: Pair(0.1, 3))
+        let cascade = try Raster<Pair>.Cascade<Double>.gaussian(deviation: 6)
+        for edge in Self.edges.dropLast() {
+            let smoothed = constant.smoothed(horizontal: cascade, vertical: cascade, edge: edge)
+            #expect(smoothed.pixels.allSatisfy { abs($0.x - 0.1) < 1e-13 && abs($0.y - 3) < 1e-12 })
+        }
+    }
+
+    @Test
+    func `An empty raster comes back as it is`() throws {
+        let empty = Raster(width: 0, height: 3, repeating: Pair(1, 1))
+        let cascade = try Raster<Pair>.Cascade<Double>.gaussian(deviation: 3)
+        #expect(empty.smoothed(horizontal: cascade, vertical: cascade, edge: .wrap) == empty)
+    }
+}
