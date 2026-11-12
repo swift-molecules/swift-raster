@@ -124,10 +124,8 @@ extension Raster {
             let tile = tiles[index]
             let left = lefts[index % across]
             let top = tops[index / across]
-            for row in 0..<tile.rows {
-                let source = row * tile.columns
-                let target = (top + row) * wide + left
-                for column in 0..<tile.columns { pixels[target + column] = tile.storage[source + column] }
+            tile.storage.indices.forEach { position in
+                pixels[(top + position / tile.columns) * wide + left + position % tile.columns] = tile.storage[position]
             }
         }
         self.init(width: Cardinal(UInt(wide)), height: Cardinal(UInt(tall)), valid: pixels)
