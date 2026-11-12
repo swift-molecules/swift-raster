@@ -1338,13 +1338,13 @@ extension `Raster Tests`.`A cascade of boxes blurs in time that does not grow wi
     @Test
     func `A Gaussian cascade has the deviation's variance exactly, and reaches its passes times its radius plus one`() throws {
         for deviation in [0.3, 1, 2, 2.84, 7.5, 30, 64] {
-            for count in [1, 3, 5] {
+            for count: Cardinal in [1, 3, 5] {
                 let cascade = try Raster<Pair>.Cascade<Double>.gaussian(deviation: deviation, count: count)
                 #expect(abs(cascade.variance - deviation * deviation) < 1e-9 * deviation * deviation)
                 #expect(cascade.end >= 0 && cascade.end < 1)
-                #expect(Int(bitPattern: cascade.reach) == count * (cascade.radius + 1))
+                #expect(Int(bitPattern: cascade.reach) == Int(bitPattern: count) * (Int(bitPattern: cascade.radius) + 1))
                 let kernel = cascade.kernel
-                #expect(kernel.weights.count == 2 * Int(bitPattern: cascade.reach) + 1)
+                #expect(kernel.radius == cascade.reach)
                 #expect(abs(kernel.weights.reduce(0, +) - 1) < 1e-12)
             }
         }
