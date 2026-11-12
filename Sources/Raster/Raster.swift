@@ -98,6 +98,65 @@ extension Raster {
 
 extension Raster {
     @inlinable
+    public init(tiling tiles: [Self], columns: Cardinal, gap: Cardinal = .zero, fill: Pixel) throws(Error) {
+        guard !tiles.isEmpty else {
+            self.init(columns: 0, rows: 0, repeating: fill)
+            return
+        }
+        let limit = Int(bitPattern: columns)
+        let space = Int(bitPattern: gap)
+        guard limit > 0, space >= 0 else { throw .count }
+        let across = Swift.min(limit, tiles.count)
+        let down = tiles.count / across + (tiles.count % across == 0 ? 0 : 1)
+        var widths = [Int](repeating: 0, count: across)
+        var heights = [Int](repeating: 0, count: down)
+        for index in tiles.indices {
+            widths[index % across] = Swift.max(widths[index % across], tiles[index].columns)
+            heights[index / across] = Swift.max(heights[index / across], tiles[index].rows)
+        }
+        guard let (lefts, wide) = Self.starts(of: widths, gap: space), let (tops, tall) = Self.starts(of: heights, gap: space) else {
+            throw .count
+        }
+        let (count, overflow) = wide.multipliedReportingOverflow(by: tall)
+        guard !overflow else { throw .count }
+        var pixels = [Pixel](repeating: fill, count: count)
+        for index in tiles.indices {
+            let tile = tiles[index]
+            let left = lefts[index % across]
+            let top = tops[index / across]
+            for row in 0..<tile.rows {
+                let source = row * tile.columns
+                let target = (top + row) * wide + left
+                for column in 0..<tile.columns { pixels[target + column] = tile.storage[source + column] }
+            }
+        }
+        self.init(width: Cardinal(UInt(wide)), height: Cardinal(UInt(tall)), valid: pixels)
+    }
+
+    /// Where each of some lengths starts when they follow one another a gap apart, and where the last one
+    /// ends; `nil` when that does not fit a signed word.
+    @inlinable
+    internal static func starts(of lengths: [Int], gap: Int) -> (starts: [Int], end: Int)? {
+        var starts: [Int] = []
+        starts.reserveCapacity(lengths.count)
+        var end = 0
+        for length in lengths {
+            if !starts.isEmpty {
+                let (spaced, far) = end.addingReportingOverflow(gap)
+                guard !far else { return nil }
+                end = spaced
+            }
+            starts.append(end)
+            let (next, far) = end.addingReportingOverflow(length)
+            guard !far else { return nil }
+            end = next
+        }
+        return (starts, end)
+    }
+}
+
+extension Raster {
+    @inlinable
     public func map<Result, Failure: Swift::Error>(
         _ transform: (Pixel) throws(Failure) -> Result
     ) throws(Failure) -> Raster<Result> {

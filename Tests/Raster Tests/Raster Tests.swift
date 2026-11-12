@@ -157,6 +157,81 @@ extension `Raster Tests` {
 
 extension `Raster Tests` {
     @Suite
+    struct `Rasters are laid out in a grid as one raster` {}
+}
+
+extension `Raster Tests`.`Rasters are laid out in a grid as one raster` {
+    typealias Tests = `Raster Tests`
+
+    @Test
+    func `Tiles of one size stand row by row, the gap between them and nowhere else`() throws {
+        let tiles = (1...5).map { Raster(width: 2, height: 1, repeating: Double($0)) }
+        let sheet = try Raster(tiling: tiles, columns: 3, gap: 1, fill: 0)
+        #expect(sheet.width == 8 && sheet.height == 3)
+        #expect(
+            sheet.pixels == [
+                1, 1, 0, 2, 2, 0, 3, 3,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                4, 4, 0, 5, 5, 0, 0, 0,
+            ]
+        )
+        let close = try Raster(tiling: tiles, columns: 3, fill: 0)
+        #expect(close.pixels == [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 0, 0])
+    }
+
+    @Test
+    func `Cropping to a tile's place gives the tile back`() throws {
+        let tiles = [Tests.grid(3, 2), Tests.varied(3, 2), Tests.varied(3, 2).map { -$0 }, Tests.grid(3, 2).map { $0 + 100 }]
+        let sheet = try Raster(tiling: tiles, columns: 2, gap: 2, fill: -1)
+        #expect(sheet.width == 8 && sheet.height == 6)
+        for (index, tile) in tiles.enumerated() {
+            let region = Raster<Double>.Region(x: Ordinal(UInt(index % 2 * 5)), y: Ordinal(UInt(index / 2 * 4)), width: 3, height: 2)
+            #expect(try sheet.cropped(to: region) == tile)
+        }
+        #expect(sheet.pixels.count { $0 == -1 } == 48 - 24)
+    }
+
+    @Test
+    func `A column is as wide as its widest tile and a row as tall as its tallest, each tile in its cell's first corner`() throws {
+        let tiles = [
+            Raster(width: 1, height: 2, repeating: 1.0), Raster(width: 2, height: 1, repeating: 2.0),
+            Raster(width: 3, height: 1, repeating: 3.0), Raster(width: 0, height: 0, repeating: 4.0),
+        ]
+        let sheet = try Raster(tiling: tiles, columns: 2, fill: 0)
+        #expect(sheet.width == 5 && sheet.height == 3)
+        #expect(
+            sheet.pixels == [
+                1, 0, 0, 2, 2,
+                1, 0, 0, 0, 0,
+                3, 3, 3, 0, 0,
+            ]
+        )
+    }
+
+    @Test
+    func `Fewer tiles than columns give as many columns as tiles, and one tile gives itself`() throws {
+        let tile = Tests.grid(3, 2)
+        #expect(try Raster(tiling: [tile], columns: 4, gap: 7, fill: -1) == tile)
+        let pair = try Raster(tiling: [tile, tile], columns: 5, gap: 1, fill: -1)
+        #expect(pair.width == 7 && pair.height == 2)
+        let column = try Raster(tiling: [tile, tile], columns: 1, gap: 1, fill: -1)
+        #expect(column.width == 3 && column.height == 5)
+        #expect(Array(column.row(2)) == [-1, -1, -1])
+    }
+
+    @Test
+    func `No tiles give a raster without pixels, and no columns for some tiles are refused`() throws {
+        let none = try Raster(tiling: [Raster<Double>](), columns: 0, fill: 0)
+        #expect(none.isEmpty && none.width == 0 && none.height == 0)
+        #expect(throws: Raster<Double>.Error.count) { try Raster(tiling: [Tests.grid(1, 1)], columns: 0, fill: 0) }
+        #expect(throws: Raster<Double>.Error.count) {
+            try Raster(tiling: [Tests.grid(1, 1), Tests.grid(1, 1)], columns: 2, gap: 9_223_372_036_854_775_807, fill: 0)
+        }
+    }
+}
+
+extension `Raster Tests` {
+    @Suite
     struct Traversal {
         @Test
         func `Mapping visits every pixel in row order, keeps the size and may change the pixel type`() {
