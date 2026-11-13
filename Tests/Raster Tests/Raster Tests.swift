@@ -920,6 +920,61 @@ extension `Raster Tests`.`Triangles are sampled at pixel centres, nearest first`
     }
 }
 
+#if !(os(macOS) && arch(x86_64))
+    extension `Raster Tests` {
+        @Suite
+        struct `Double and Float take a short way from whole numbers and back that gives what the general way gives` {}
+    }
+
+    extension `Raster Tests`.`Double and Float take a short way from whole numbers and back that gives what the general way gives` {
+        /// A raster of 7 × 5 numbers, sampled and warped at quarter positions in and around it, and two
+        /// triangles sampled over it, with positions held in a scalar: every position and fraction is exact in
+        /// Float16, which goes the general way, so each scalar must give the same numbers.
+        fileprivate static func results<Scalar: BinaryFloatingPoint>(as scalar: Scalar.Type) -> [Double] {
+            let raster = Raster<Double>(width: 7, height: 5) { x, y in Double(Int(bitPattern: x) * 3 + Int(bitPattern: y) * 11) }
+            func mix(_ from: Double, _ to: Double, _ parameter: Scalar) -> Double { from + (to - from) * Double(parameter) }
+            var results: [Double] = []
+            let quarter: Scalar = 1 / 4
+            (-12..<40).forEach { across in
+                (-10..<30).forEach { down in
+                    let point = Point<2, Scalar>(x: Scalar(across) * quarter, y: Scalar(down) * quarter)
+                    results.append(raster.sample(at: point, .nearest, edge: .extend, mixing: mix))
+                    results.append(raster.sample(at: point, .bilinear, edge: .constant(-1), mixing: mix))
+                }
+            }
+            let warped = raster.warped(width: 9, height: 6, .bilinear, edge: .extend, mixing: mix) { (point: Point<2, Scalar>) in
+                Point(x: point.x - quarter * 5, y: point.y + quarter)
+            }
+            results += warped.pixels
+            let triangles: [InlineArray<3, Point<3, Scalar>>] = [
+                [Point(x: -3, y: -2, z: 1), Point(x: 9, y: 1, z: 2), Point(x: 2, y: 8, z: 4)],
+                [Point(x: quarter, y: 4, z: 3), Point(x: 6, y: quarter, z: 3), Point(x: 7, y: 5, z: 1)],
+            ]
+            let hits = Raster<Double>.fragments(of: triangles, width: 7, height: 5, empty: -1) { triangle, _, _ in Double(Int(bitPattern: triangle)) }
+            results += hits.pixels
+            return results
+        }
+
+        @Test
+        func `sampling, warping and triangles give the same numbers with positions in Double, Float and Float16`() {
+            let general = Self.results(as: Float16.self)
+            #expect(Self.results(as: Double.self) == general)
+            #expect(Self.results(as: Float.self) == general)
+            #expect(general.count > 4000 && Set(general).count > 100)
+        }
+
+        @Test
+        func `a position far outside a word's range, or below zero, lands where it did`() throws {
+            let raster = try Raster<Int>(width: 3, height: 1, pixels: [1, 2, 3])
+            func mix(_ from: Int, _ to: Int, _ parameter: Double) -> Int { parameter < 0.5 ? from : to }
+            #expect(raster.sample(at: Point(x: -0.25, y: 0.5), .nearest, edge: .constant(0), mixing: mix) == 0)
+            #expect(raster.sample(at: Point(x: -1e300, y: 0.5), .nearest, edge: .extend, mixing: mix) == 1)
+            #expect(raster.sample(at: Point(x: 1e300, y: 0.5), .nearest, edge: .extend, mixing: mix) == 3)
+            #expect(raster.sample(at: Point(x: 2.75, y: -7.5), .nearest, edge: .extend, mixing: mix) == 3)
+        }
+    }
+#endif
+
 extension `Raster Tests` {
     @Suite
     struct `A row is scanned between the triangle's edges and finds what a scan of every pixel finds` {}

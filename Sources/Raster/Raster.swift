@@ -215,8 +215,8 @@ extension Raster {
             let down = point.y - half
             let left = Self.floor(across)
             let top = Self.floor(down)
-            let right = across - Scalar(left)
-            let below = down - Scalar(top)
+            let right = across - Self.real(left)
+            let below = down - Self.real(top)
             let upper = try self.span(column: left, row: top, fraction: right, edge: edge, mixing: mix)
             guard below > 0 else { return upper }
             let lower = try self.span(column: left, row: top + 1, fraction: right, edge: edge, mixing: mix)
@@ -235,7 +235,7 @@ extension Raster {
     ) throws(Failure) -> Self {
         let half: Scalar = 1 / 2
         return try Self.filled(columns: Int(bitPattern: width), rows: Int(bitPattern: height)) { (x, y) throws(Failure) in
-            let point = try source(Point(x: Scalar(x) + half, y: Scalar(y) + half))
+            let point = try source(Point(x: Self.real(x) + half, y: Self.real(y) + half))
             return try self.sample(at: point, sampling, edge: edge, mixing: mix)
         }
     }
@@ -399,9 +399,9 @@ extension Raster {
         to upper: Int
     ) -> Int {
         let rounded = value.rounded(rule)
-        guard rounded > Scalar(lower) else { return lower }
-        guard rounded < Scalar(upper) else { return upper }
-        return Int(rounded)
+        guard rounded > real(lower) else { return lower }
+        guard rounded < real(upper) else { return upper }
+        return word(rounded)
     }
 
     /// Where a region starts along one axis, as a signed word that leaves room to add the region's extent.
@@ -415,8 +415,30 @@ extension Raster {
     @inlinable
     internal static func floor<Scalar: BinaryFloatingPoint>(_ value: Scalar) -> Int {
         precondition(value.isFinite, "A sample position is finite")
+        if let double = value as? Double {
+            return Int(Swift.min(Swift.max(double.rounded(.down), -0x1p62), 0x1p62))
+        }
         let limit = Scalar(sign: .plus, exponent: 62, significand: 1)
         return Int(Swift.min(Swift.max(value.rounded(.down), -limit), limit))
+    }
+
+    /// A whole number as a scalar; for `Double` and `Float` by the processor's own conversion, which gives
+    /// the number the general one gives without going through it.
+    @inlinable
+    @inline(__always)
+    internal static func real<Scalar: BinaryFloatingPoint>(_ value: Int) -> Scalar {
+        if let double = Double(value) as? Scalar { return double }
+        if let float = Float(value) as? Scalar { return float }
+        return Scalar(value)
+    }
+
+    /// A scalar that holds a whole number in a word's range, as that word.
+    @inlinable
+    @inline(__always)
+    internal static func word<Scalar: BinaryFloatingPoint>(_ value: Scalar) -> Int {
+        if let double = value as? Double { return Int(double) }
+        if let float = value as? Float { return Int(float) }
+        return Int(value)
     }
 }
 
@@ -469,7 +491,7 @@ extension Raster {
         return try filled(columns: columns, rows: Int(bitPattern: region.height)) { (column, row) throws(Failure) in
             let winner = nearest.winners[row * columns + column]
             guard winner >= 0, let facet = nearest.facets[winner],
-                let sample = facet.sample(x: Scalar(left + column) + half, y: Scalar(top + row) + half)
+                let sample = facet.sample(x: real(left + column) + half, y: real(top + row) + half)
             else { return empty }
             return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
         }
@@ -526,11 +548,11 @@ extension Raster {
             var row = firstRow
             while row < endRow {
                 let base = (row - top) * columns - left
-                let y = Scalar(row) + half
+                let y: Scalar = real(row) + half
                 let span = facet.span(y: y, from: firstColumn, to: endColumn)
                 var column = span.first
                 while column < span.end {
-                    if let sample = facet.sample(x: Scalar(column) + half, y: y),
+                    if let sample = facet.sample(x: real(column) + half, y: y),
                         winners[base + column] < 0 || sample.depth < depths[base + column]
                     {
                         winners[base + column] = number

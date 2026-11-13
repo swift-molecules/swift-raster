@@ -86,19 +86,18 @@ extension Raster.Facet {
             let border = edges[edge]
             edge += 1
             guard border.run.y > 0 || border.run.y < 0 else {
-                guard border.admits(x: Scalar(low) + half, y: y) else { return (first, first) }
+                guard border.admits(x: Raster.real(low) + half, y: y) else { return (first, first) }
                 continue
             }
             let level = border.run.x * (y - border.anchor.y)
             guard level.isFinite, border.run.y.isFinite else { continue }
             let crossing = border.anchor.x + level / border.run.y - half
             if border.reversed == (border.run.y > 0) {
-                // The measure rises along the row: the edge admits the centres from the crossing on.
                 let column = Raster.whole(crossing, .down, from: low, to: high) - 1
-                if column > low, !border.admits(x: Scalar(column - 1) + half, y: y) { low = column }
+                if column > low, !border.admits(x: Raster.real(column - 1) + half, y: y) { low = column }
             } else {
                 let column = Raster.whole(crossing, .up, from: low, to: high) + 2
-                if column < high, !border.admits(x: Scalar(column) + half, y: y) { high = column }
+                if column < high, !border.admits(x: Raster.real(column) + half, y: y) { high = column }
             }
         }
         return low < high ? (low, high) : (first, first)
