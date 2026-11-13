@@ -920,6 +920,227 @@ extension `Raster Tests`.`Triangles are sampled at pixel centres, nearest first`
     }
 }
 
+extension `Raster Tests` {
+    @Suite
+    struct `A row is scanned between the triangle's edges and finds what a scan of every pixel finds` {}
+}
+
+extension `Raster Tests`.`A row is scanned between the triangle's edges and finds what a scan of every pixel finds` {
+    /// Numbers from a seed, the same on every run (SplitMix64).
+    fileprivate struct Seeded {
+        var state: UInt64
+
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+
+        /// A number from `low` up to `high`.
+        mutating func number(_ low: Double, _ high: Double) -> Double {
+            low + (high - low) * Double(next() >> 11) / 9_007_199_254_740_992
+        }
+    }
+
+    /// A fragment as a caller might keep it. Two are equal when their numbers are the same or both not a
+    /// number, which is what a triangle with corners at the far end of the scalar's range gives.
+    fileprivate struct Hit<Scalar: BinaryFloatingPoint>: Equatable {
+        var triangle: Ordinal
+        var weights: [Scalar]
+        var depth: Scalar
+
+        static func == (first: Self, second: Self) -> Bool {
+            func same(_ one: Scalar, _ other: Scalar) -> Bool { one == other || (one.isNaN && other.isNaN) }
+            return first.triangle == second.triangle && same(first.depth, second.depth)
+                && first.weights.count == second.weights.count
+                && zip(first.weights, second.weights).allSatisfy { same($0, $1) }
+        }
+    }
+
+    fileprivate static var columns: Int { 23 }
+    fileprivate static var rows: Int { 17 }
+
+    fileprivate static func triangle<Scalar: BinaryFloatingPoint>(_ corners: [(x: Double, y: Double)], depth: Double) -> InlineArray<3, Point<3, Scalar>> {
+        [
+            Point(x: Scalar(corners[0].x), y: Scalar(corners[0].y), z: Scalar(depth)),
+            Point(x: Scalar(corners[1].x), y: Scalar(corners[1].y), z: Scalar(depth * 0.5)),
+            Point(x: Scalar(corners[2].x), y: Scalar(corners[2].y), z: Scalar(depth * 0.25)),
+        ]
+    }
+
+    /// The whole raster's fragments of one triangle, by the scan between the edges.
+    fileprivate static func scanned<Scalar: BinaryFloatingPoint>(_ triangle: InlineArray<3, Point<3, Scalar>>) -> [Hit<Scalar>?] {
+        Raster<Hit<Scalar>?>.fragments(of: [triangle], width: Cardinal(UInt(columns)), height: Cardinal(UInt(rows)), empty: nil) { number, weights, depth in
+            Hit(triangle: number, weights: [weights[0], weights[1], weights[2]], depth: depth)
+        }.pixels
+    }
+
+    /// The same fragments with every pixel asked for alone: a region of one pixel leaves a row nothing to skip.
+    fileprivate static func plain<Scalar: BinaryFloatingPoint>(_ triangle: InlineArray<3, Point<3, Scalar>>) -> [Hit<Scalar>?] {
+        (0..<rows * columns).map { index in
+            let region = Raster<Hit<Scalar>?>.Region(x: Ordinal(UInt(index % columns)), y: Ordinal(UInt(index / columns)), width: 1, height: 1)
+            return Raster<Hit<Scalar>?>.fragments(of: [triangle], in: region, empty: nil) { number, weights, depth in
+                Hit(triangle: number, weights: [weights[0], weights[1], weights[2]], depth: depth)
+            }.pixels[0]
+        }
+    }
+
+    /// How many of the triangles take a centre at all, after holding each one's scan equal to the plain one.
+    fileprivate static func compared<Scalar: BinaryFloatingPoint>(_ list: [[(x: Double, y: Double)]], as scalar: Scalar.Type, _ kind: String) -> Int {
+        var taking = 0
+        list.indices.forEach { index in
+            let triangle: InlineArray<3, Point<3, Scalar>> = triangle(list[index], depth: 1 + Double(index))
+            let fast = scanned(triangle)
+            #expect(fast == plain(triangle), "\(kind) triangle \(index) as \(scalar): \(list[index])")
+            if fast.contains(where: { $0 != nil }) { taking += 1 }
+        }
+        return taking
+    }
+
+    fileprivate static func both(_ list: [[(x: Double, y: Double)]], _ kind: String) -> Int {
+        let double = compared(list, as: Double.self, kind)
+        let float = compared(list, as: Float.self, kind)
+        return Swift.min(double, float)
+    }
+
+    @Test
+    func `triangles of every shape across the raster`() {
+        var seeded = Seeded(state: 1)
+        let list = (0..<120).map { _ in
+            (0..<3).map { _ in (x: seeded.number(-4, 27), y: seeded.number(-4, 21)) }
+        }
+        #expect(Self.both(list, "any") > 100)
+    }
+
+    @Test
+    func `thin triangles, as a line drawn two triangles to a stroke gives`() {
+        var seeded = Seeded(state: 2)
+        var list: [[(x: Double, y: Double)]] = []
+        (0..<60).forEach { _ in
+            // A stroke from one point to another, a fraction of a pixel to two pixels wide, as two triangles.
+            let start = (x: seeded.number(-6, 29), y: seeded.number(-6, 23))
+            let end = (x: seeded.number(-6, 29), y: seeded.number(-6, 23))
+            let length = ((end.x - start.x) * (end.x - start.x) + (end.y - start.y) * (end.y - start.y)).squareRoot()
+            let width = seeded.number(0.05, 2)
+            let across = (x: -(end.y - start.y) / length * width / 2, y: (end.x - start.x) / length * width / 2)
+            let quad = [
+                (x: start.x + across.x, y: start.y + across.y), (x: end.x + across.x, y: end.y + across.y),
+                (x: end.x - across.x, y: end.y - across.y), (x: start.x - across.x, y: start.y - across.y),
+            ]
+            list.append([quad[0], quad[1], quad[2]])
+            list.append([quad[0], quad[2], quad[3]])
+        }
+        // Strokes along a row, down a column, and a hair off either.
+        list.append([(x: -3, y: 4.5), (x: 30, y: 4.5), (x: 30, y: 5.5)])
+        list.append([(x: -3, y: 4.4), (x: 30, y: 4.4000001), (x: 30, y: 5.6)])
+        list.append([(x: 7.5, y: -3), (x: 8.5, y: -3), (x: 8.5, y: 30)])
+        list.append([(x: 7.4, y: -3), (x: 7.6, y: 30), (x: 7.4000001, y: 30)])
+        #expect(Self.both(list, "thin") > 60)
+    }
+
+    @Test
+    func `tiny triangles, smaller than a pixel and around a centre`() {
+        var seeded = Seeded(state: 3)
+        var list: [[(x: Double, y: Double)]] = []
+        (0..<80).forEach { _ in
+            let centre = (x: seeded.number(0, 23).rounded(.down) + 0.5, y: seeded.number(0, 17).rounded(.down) + 0.5)
+            let reach = seeded.number(0.001, 0.9)
+            list.append((0..<3).map { _ in (x: centre.x + seeded.number(-reach, reach), y: centre.y + seeded.number(-reach, reach)) })
+        }
+        // A corner on a centre, and an edge through centres.
+        list.append([(x: 5.5, y: 5.5), (x: 5.75, y: 5.5), (x: 5.5, y: 5.75)])
+        list.append([(x: 5.5, y: 5.5), (x: 8.5, y: 8.5), (x: 5.5, y: 8.5)])
+        list.append([(x: 5.5, y: 5.5), (x: 8.5, y: 8.5), (x: 8.5, y: 5.5)])
+        #expect(Self.both(list, "tiny") > 20)
+    }
+
+    @Test
+    func `clipped triangles, with corners far off the raster`() {
+        var seeded = Seeded(state: 4)
+        var list: [[(x: Double, y: Double)]] = []
+        [1e2, 1e4, 1e7, 1e12, 1e17, 1e30, 1e150, 1e300].forEach { far in
+            (0..<12).forEach { _ in
+                var corners = (0..<3).map { _ in (x: seeded.number(-2, 25), y: seeded.number(-2, 19)) }
+                let moved = Int(seeded.number(1, 3.999))
+                (0..<moved).forEach { corner in
+                    corners[corner] = (x: seeded.number(-1, 1) * far, y: seeded.number(-1, 1) * far)
+                }
+                list.append(corners)
+            }
+        }
+        // The greatest numbers there are: an edge's run is then not finite.
+        let most = Double.greatestFiniteMagnitude
+        list.append([(x: -most, y: -most), (x: most, y: -most), (x: 3, y: most)])
+        list.append([(x: -most, y: 3), (x: most, y: 4), (x: 11, y: most)])
+        #expect(Self.both(list, "clipped") > 20)
+    }
+
+    @Test
+    func `triangles without area or nearly so`() {
+        var seeded = Seeded(state: 5)
+        var list: [[(x: Double, y: Double)]] = []
+        (0..<40).forEach { index in
+            let start = (x: seeded.number(-2, 25), y: seeded.number(-2, 19))
+            let end = (x: seeded.number(-2, 25), y: seeded.number(-2, 19))
+            let part = seeded.number(-0.5, 1.5)
+            let off = index.isMultiple(of: 4) ? 0 : seeded.number(-1e-9, 1e-9)
+            let x = start.x + (end.x - start.x) * part + off
+            let y = start.y + (end.y - start.y) * part - off
+            list.append([start, end, (x: x, y: y)])
+        }
+        list.append([(x: 3, y: 3), (x: 3, y: 3), (x: 9, y: 9)])
+        list.append([(x: 3, y: 3), (x: 3, y: 3), (x: 3, y: 3)])
+        list.append([(x: 0, y: 4.5), (x: 23, y: 4.5), (x: 11, y: 4.5)])
+        _ = Self.both(list, "flat")
+        // Nearly flat ones that do take centres: a sliver a thousandth of a pixel high over a row of centres.
+        let slivers = (0..<17).map { (row: Int) -> [(x: Double, y: Double)] in
+            let centre = Double(row) + 0.5
+            let high: (x: Double, y: Double) = (x: -1, y: centre - 0.0005)
+            let low: (x: Double, y: Double) = (x: -1, y: centre + 0.0005)
+            return [high, (x: 24, y: centre), low]
+        }
+        #expect(Self.both(slivers, "sliver") == 17)
+    }
+
+    @Test
+    func `without weights each pixel has the same triangle and the same depth, and the empty pixel where none takes it`() throws {
+        var seeded = Seeded(state: 6)
+        let list: [InlineArray<3, Point<3, Double>>] = (0..<60).map { index in
+            Self.triangle((0..<3).map { _ in (x: seeded.number(-4, 27), y: seeded.number(-4, 21)) }, depth: seeded.number(0.1, 4) + Double(index % 3))
+        }
+        let region = Raster<Hit<Double>?>.Region(x: 2, y: 1, width: 19, height: 14)
+        let weighted = Raster<Hit<Double>?>.fragments(of: list, in: region, empty: nil) { number, _, depth in
+            Hit(triangle: number, weights: [], depth: depth)
+        }
+        let bare = Raster<Hit<Double>?>.fragments(of: list, in: region, empty: nil) { number, depth in
+            Hit(triangle: number, weights: [], depth: depth)
+        }
+        #expect(weighted == bare)
+        #expect(Set(bare.pixels.compactMap { $0?.triangle }).count > 10)
+
+        let whole = Raster<Hit<Double>?>.fragments(of: list, width: 23, height: 17, empty: nil) { number, depth in
+            Hit(triangle: number, weights: [], depth: depth)
+        }
+        #expect(try whole.cropped(to: region) == bare)
+
+        let apart = Raster<Int>.fragments(of: [Self.triangle([(x: 0, y: 0), (x: 2, y: 0), (x: 0, y: 2)], depth: 1) as InlineArray<3, Point<3, Double>>], width: 3, height: 2, empty: 7) { _, _ in 0 }
+        #expect(apart.pixels == [0, 7, 7, 7, 7, 7])
+        var asked = 0
+        let counted = Raster<Int>.fragments(of: [Self.triangle([(x: 0, y: 0), (x: 3, y: 0), (x: 0, y: 3)], depth: 1) as InlineArray<3, Point<3, Double>>], width: 3, height: 3, empty: 0) { _, _ in
+            asked += 1
+            return asked
+        }
+        #expect(counted.pixels == [1, 2, 0, 3, 0, 0, 0, 0, 0])
+        #expect(throws: `Raster Tests`.Failure.self) {
+            try Raster<Int>.fragments(of: [Self.triangle([(x: 0, y: 0), (x: 9, y: 0), (x: 0, y: 9)], depth: 1) as InlineArray<3, Point<3, Double>>], width: 3, height: 2, empty: 0) {
+                (_, _) throws(`Raster Tests`.Failure) -> Int in throw `Raster Tests`.Failure()
+            }
+        }
+    }
+}
+
 #if Geometry
     extension `Raster Tests` {
         @Suite

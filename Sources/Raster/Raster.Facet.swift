@@ -67,3 +67,40 @@ extension Raster.Facet {
         return (exchanged ? [one, three, two] : [one, two, three], depth)
     }
 }
+
+extension Raster.Facet {
+    /// Columns of the row whose centres lie at `y`, among those from `first` up to `end`, outside which the
+    /// triangle takes no centre: the row's scan may be held to them and finds what it would find in all.
+    ///
+    /// Along a row an edge's measure only rises or only falls, in rounded arithmetic as in exact, so the
+    /// centres an edge admits are all those from some column on, or all those up to one. Where the measure
+    /// crosses zero is solved for, a column is kept to either side of it, and the bound is used only once
+    /// the edge is seen to refuse the centre just beyond it. A bound that rounding put wrong is not used.
+    @inlinable
+    internal func span(y: Scalar, from first: Int, to end: Int) -> (first: Int, end: Int) {
+        let half: Scalar = 1 / 2
+        var low = first
+        var high = end
+        var edge = 0
+        while edge < 3, low < high {
+            let border = edges[edge]
+            edge += 1
+            guard border.run.y > 0 || border.run.y < 0 else {
+                guard border.admits(x: Scalar(low) + half, y: y) else { return (first, first) }
+                continue
+            }
+            let level = border.run.x * (y - border.anchor.y)
+            guard level.isFinite, border.run.y.isFinite else { continue }
+            let crossing = border.anchor.x + level / border.run.y - half
+            if border.reversed == (border.run.y > 0) {
+                // The measure rises along the row: the edge admits the centres from the crossing on.
+                let column = Raster.whole(crossing, .down, from: low, to: high) - 1
+                if column > low, !border.admits(x: Scalar(column - 1) + half, y: y) { low = column }
+            } else {
+                let column = Raster.whole(crossing, .up, from: low, to: high) + 2
+                if column < high, !border.admits(x: Scalar(column) + half, y: y) { high = column }
+            }
+        }
+        return low < high ? (low, high) : (first, first)
+    }
+}

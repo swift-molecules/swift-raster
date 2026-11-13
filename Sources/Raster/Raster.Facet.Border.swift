@@ -32,4 +32,11 @@ extension Raster.Facet.Border {
         let measure = run.x * (y - anchor.y) - run.y * (x - anchor.x)
         return reversed ? -measure : measure
     }
+
+    /// Whether the edge lets its triangle take a centre: one on the triangle's side, or on the line of an edge that owns it.
+    @inlinable
+    internal func admits(x: Scalar, y: Scalar) -> Bool {
+        let side = side(x: x, y: y)
+        return side > 0 || (side == 0 && owns)
+    }
 }

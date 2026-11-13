@@ -461,6 +461,46 @@ extension Raster {
         empty: Pixel,
         _ pixel: (_ triangle: Ordinal, _ weights: InlineArray<3, Scalar>, _ depth: Scalar) throws(Failure) -> Pixel
     ) throws(Failure) -> Self {
+        let nearest = nearest(of: triangles, in: region)
+        let columns = Int(bitPattern: region.width)
+        let left = origin(region.x)
+        let top = origin(region.y)
+        let half: Scalar = 1 / 2
+        return try filled(columns: columns, rows: Int(bitPattern: region.height)) { (column, row) throws(Failure) in
+            let winner = nearest.winners[row * columns + column]
+            guard winner >= 0, let facet = nearest.facets[winner],
+                let sample = facet.sample(x: Scalar(left + column) + half, y: Scalar(top + row) + half)
+            else { return empty }
+            return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
+        }
+    }
+
+    /// `fragments(of:in:empty:_:)` for a pixel that needs no weights: `pixel` is given the triangle's position
+    /// in the sequence and the depth at the centre. The same triangle wins each pixel, at the same depth, and
+    /// the winner is not measured a second time.
+    @inlinable
+    public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
+        of triangles: some Swift::Sequence<InlineArray<3, Point<3, Scalar>>>,
+        in region: Region,
+        empty: Pixel,
+        _ pixel: (_ triangle: Ordinal, _ depth: Scalar) throws(Failure) -> Pixel
+    ) throws(Failure) -> Self {
+        let nearest = nearest(of: triangles, in: region)
+        let columns = Int(bitPattern: region.width)
+        return try filled(columns: columns, rows: Int(bitPattern: region.height)) { (column, row) throws(Failure) in
+            let winner = nearest.winners[row * columns + column]
+            guard winner >= 0 else { return empty }
+            return try pixel(Ordinal(UInt(winner)), nearest.depths[row * columns + column])
+        }
+    }
+
+    /// The triangles made ready, and for each pixel of `region`, row by row, the position in the sequence of
+    /// the nearest triangle that takes the pixel's centre, or -1 where none does, with its depth there.
+    @inlinable
+    internal static func nearest<Scalar: BinaryFloatingPoint>(
+        of triangles: some Swift::Sequence<InlineArray<3, Point<3, Scalar>>>,
+        in region: Region
+    ) -> (facets: [Facet<Scalar>?], winners: [Int], depths: [Scalar]) {
         let columns = Int(bitPattern: region.width)
         let rows = Int(bitPattern: region.height)
         precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
@@ -472,41 +512,36 @@ extension Raster {
         var facets: [Facet<Scalar>?] = []
         var winners = [Int](repeating: -1, count: count)
         var depths = [Scalar](repeating: 0, count: count)
-        if count > 0 {
-            for triangle in triangles {
-                let number = facets.count
-                let facet = Facet(triangle)
-                facets.append(facet)
-                guard let facet else { continue }
-                let firstColumn = whole(facet.low.x - half, .down, from: left, to: left + columns)
-                let endColumn = whole(facet.high.x - half, .up, from: left - 1, to: left + columns - 1) + 1
-                let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
-                let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
-                guard firstColumn < endColumn, firstRow < endRow else { continue }
-                var row = firstRow
-                while row < endRow {
-                    let base = (row - top) * columns - left
-                    var column = firstColumn
-                    while column < endColumn {
-                        if let sample = facet.sample(x: Scalar(column) + half, y: Scalar(row) + half),
-                            winners[base + column] < 0 || sample.depth < depths[base + column]
-                        {
-                            winners[base + column] = number
-                            depths[base + column] = sample.depth
-                        }
-                        column += 1
+        guard count > 0 else { return (facets, winners, depths) }
+        for triangle in triangles {
+            let number = facets.count
+            let facet = Facet(triangle)
+            facets.append(facet)
+            guard let facet else { continue }
+            let firstColumn = whole(facet.low.x - half, .down, from: left, to: left + columns)
+            let endColumn = whole(facet.high.x - half, .up, from: left - 1, to: left + columns - 1) + 1
+            let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
+            let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
+            guard firstColumn < endColumn, firstRow < endRow else { continue }
+            var row = firstRow
+            while row < endRow {
+                let base = (row - top) * columns - left
+                let y = Scalar(row) + half
+                let span = facet.span(y: y, from: firstColumn, to: endColumn)
+                var column = span.first
+                while column < span.end {
+                    if let sample = facet.sample(x: Scalar(column) + half, y: y),
+                        winners[base + column] < 0 || sample.depth < depths[base + column]
+                    {
+                        winners[base + column] = number
+                        depths[base + column] = sample.depth
                     }
-                    row += 1
+                    column += 1
                 }
+                row += 1
             }
         }
-        return try filled(columns: columns, rows: rows) { (column, row) throws(Failure) in
-            let winner = winners[row * columns + column]
-            guard winner >= 0, let facet = facets[winner],
-                let sample = facet.sample(x: Scalar(left + column) + half, y: Scalar(top + row) + half)
-            else { return empty }
-            return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
-        }
+        return (facets, winners, depths)
     }
 
     /// `fragments(of:in:empty:_:)` over the whole raster of the given size.
@@ -517,6 +552,18 @@ extension Raster {
         height: Cardinal,
         empty: Pixel,
         _ pixel: (_ triangle: Ordinal, _ weights: InlineArray<3, Scalar>, _ depth: Scalar) throws(Failure) -> Pixel
+    ) throws(Failure) -> Self {
+        try fragments(of: triangles, in: Region(x: .zero, y: .zero, width: width, height: height), empty: empty, pixel)
+    }
+
+    /// `fragments(of:in:empty:_:)` without weights, over the whole raster of the given size.
+    @inlinable
+    public static func fragments<Scalar: BinaryFloatingPoint, Failure: Swift::Error>(
+        of triangles: some Swift::Sequence<InlineArray<3, Point<3, Scalar>>>,
+        width: Cardinal,
+        height: Cardinal,
+        empty: Pixel,
+        _ pixel: (_ triangle: Ordinal, _ depth: Scalar) throws(Failure) -> Pixel
     ) throws(Failure) -> Self {
         try fragments(of: triangles, in: Region(x: .zero, y: .zero, width: width, height: height), empty: empty, pixel)
     }
