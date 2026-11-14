@@ -29,7 +29,21 @@ extension Raster.Facet.Border {
     /// Positive on the triangle's side of the edge, negative on the other, zero on the edge's line.
     @inlinable
     internal func side(x: Scalar, y: Scalar) -> Scalar {
-        let measure = run.x * (y - anchor.y) - run.y * (x - anchor.x)
+        side(x: x, level: level(y: y))
+    }
+
+    /// The part of the measure that depends on the height alone.
+    @inlinable
+    @inline(__always)
+    internal func level(y: Scalar) -> Scalar {
+        run.x * (y - anchor.y)
+    }
+
+    /// `side(x:y:)` with the height's part, `level(y:)`, already worked out.
+    @inlinable
+    @inline(__always)
+    internal func side(x: Scalar, level: Scalar) -> Scalar {
+        let measure = level - run.y * (x - anchor.x)
         return reversed ? -measure : measure
     }
 

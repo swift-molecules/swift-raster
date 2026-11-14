@@ -115,46 +115,69 @@ extension Raster where Pixel: SIMD, Pixel.Scalar: BinaryFloatingPoint {
         let scale = Pixel.Scalar(1) / (Pixel.Scalar(2 * radius + 1) + 2 * end)
         let lines = down ? columns : rows
         let length = down ? rows : columns
-        var result = storage
-        var line = [Pixel](repeating: .zero, count: length + 2 * reach)
-        var next = line
-        var index = 0
-        while index < lines {
-            var position = 0
-            while position < line.count {
-                let along = position - reach
-                line[position] = down ? self[column: index, row: along, edge: edge] : self[column: along, row: index, edge: edge]
-                position += 1
-            }
-            var count = line.count
-            var pass = 0
-            while pass < cascade.passes {
-                let kept = count - 2 * (radius + 1)
-                var sum = Pixel.zero
-                var tap = 1
-                while tap <= 2 * radius + 1 {
-                    sum += line[tap]
-                    tap += 1
-                }
-                var at = 0
-                while at < kept {
-                    let centre = at + radius + 1
-                    next[at] = (sum + end * (line[centre - radius - 1] + line[centre + radius + 1])) * scale
-                    if at + 1 < kept {
-                        sum += line[centre + radius + 1] - line[centre - radius]
+        let along = down ? columns : 1
+        let apart = down ? 1 : columns
+        let passes = cascade.passes
+        var first = [Pixel](repeating: .zero, count: length + 2 * reach)
+        var second = first
+        let result = unsafe [Pixel](unsafeUninitializedCapacity: storage.count) { output, initialized in
+            storage.withUnsafeBufferPointer { pixels in
+                first.withUnsafeMutableBufferPointer { first in
+                    second.withUnsafeMutableBufferPointer { second in
+                        var line = unsafe first
+                        var next = unsafe second
+                        var index = 0
+                        while index < lines {
+                            let start = index &* apart
+                            var position = 0
+                            while position < reach {
+                                let at = position - reach
+                                unsafe line[position] = down ? self[column: index, row: at, edge: edge] : self[column: at, row: index, edge: edge]
+                                position += 1
+                            }
+                            while position < reach + length {
+                                unsafe line[position] = unsafe pixels[start &+ (position &- reach) &* along]
+                                position += 1
+                            }
+                            while position < line.count {
+                                let at = position - reach
+                                unsafe line[position] = down ? self[column: index, row: at, edge: edge] : self[column: at, row: index, edge: edge]
+                                position += 1
+                            }
+                            var count = line.count
+                            var pass = 0
+                            while pass < passes {
+                                let kept = count - 2 * (radius + 1)
+                                var sum = Pixel.zero
+                                var tap = 1
+                                while tap <= 2 * radius + 1 {
+                                    sum += unsafe line[tap]
+                                    tap += 1
+                                }
+                                var at = 0
+                                while at < kept {
+                                    let centre = at + radius + 1
+                                    unsafe next[at] = unsafe (sum + end * (line[centre - radius - 1] + line[centre + radius + 1])) * scale
+                                    if at + 1 < kept {
+                                        sum += unsafe line[centre + radius + 1] - line[centre - radius]
+                                    }
+                                    at += 1
+                                }
+                                unsafe swap(&line, &next)
+                                count = kept
+                                pass += 1
+                            }
+                            position = 0
+                            while position < length {
+                                unsafe (output.baseAddress.unsafelyUnwrapped + (start &+ position &* along)).initialize(to: line[position])
+                                position += 1
+                            }
+                            index += 1
+                        }
                     }
-                    at += 1
                 }
-                swap(&line, &next)
-                count = kept
-                pass += 1
             }
-            position = 0
-            while position < length {
-                result[down ? position * columns + index : index * columns + position] = line[position]
-                position += 1
-            }
-            index += 1
+            initialized = storage.count
         }
         return Self(width: width, height: height, valid: result)
     }

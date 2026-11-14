@@ -36,7 +36,7 @@ extension Raster {
         height: Cardinal,
         _ pixel: (_ x: Ordinal, _ y: Ordinal) throws(Failure) -> Pixel
     ) throws(Failure) {
-        self = try Self.filled(columns: Int(bitPattern: width), rows: Int(bitPattern: height)) { (x, y) throws(Failure) in
+        self = try Self.filled(columns: Int(bitPattern: width), rows: Int(bitPattern: height)) { x, y throws(Failure) in
             try pixel(Ordinal(UInt(x)), Ordinal(UInt(y)))
         }
     }
@@ -217,6 +217,17 @@ extension Raster {
             let top = Self.floor(down)
             let right = across - Self.real(left)
             let below = down - Self.real(top)
+            if left >= 0, top >= 0, left < columns - 1, top < rows - 1 {
+                return try storage.withUnsafeBufferPointer { pixels throws(Failure) -> Pixel in
+                    let index = top &* columns &+ left
+                    let first = unsafe pixels[index]
+                    let upper = right > 0 ? try mix(first, unsafe pixels[index &+ 1], right) : first
+                    guard below > 0 else { return upper }
+                    let next = unsafe pixels[index &+ columns]
+                    let lower = right > 0 ? try mix(next, unsafe pixels[index &+ columns &+ 1], right) : next
+                    return try mix(upper, lower, below)
+                }
+            }
             let upper = try self.span(column: left, row: top, fraction: right, edge: edge, mixing: mix)
             guard below > 0 else { return upper }
             let lower = try self.span(column: left, row: top + 1, fraction: right, edge: edge, mixing: mix)
@@ -234,7 +245,7 @@ extension Raster {
         from source: (Point<2, Scalar>) throws(Failure) -> Point<2, Scalar>
     ) throws(Failure) -> Self {
         let half: Scalar = 1 / 2
-        return try Self.filled(columns: Int(bitPattern: width), rows: Int(bitPattern: height)) { (x, y) throws(Failure) in
+        return try Self.filled(columns: Int(bitPattern: width), rows: Int(bitPattern: height)) { x, y throws(Failure) in
             let point = try source(Point(x: Self.real(x) + half, y: Self.real(y) + half))
             return try self.sample(at: point, sampling, edge: edge, mixing: mix)
         }
@@ -272,10 +283,10 @@ extension Raster {
         precondition(!isEmpty, "An empty raster has no pixel to resample")
         let across: [Chain<Scalar>] = filter.chains(from: columns, to: wide)
         let down: [Chain<Scalar>] = filter.chains(from: rows, to: tall)
-        let narrowed = try Self.filled(columns: wide, rows: rows) { (x, y) throws(Failure) in
+        let narrowed = try Self.filled(columns: wide, rows: rows) { x, y throws(Failure) in
             try across[x].value(mixing: mix) { self[column: $0, row: y] }
         }
-        return try Self.filled(columns: wide, rows: tall) { (x, y) throws(Failure) in
+        return try Self.filled(columns: wide, rows: tall) { x, y throws(Failure) in
             try down[y].value(mixing: mix) { narrowed[column: x, row: $0] }
         }
     }
@@ -327,10 +338,14 @@ extension Raster {
         precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
         let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
         precondition(!overflow, "A raster's pixel count fits a signed word")
-        var pixels: [Pixel] = []
-        pixels.reserveCapacity(count)
-        for row in 0..<rows {
-            for column in 0..<columns { pixels.append(try pixel(column, row)) }
+        let pixels = try unsafe [Pixel](unsafeUninitializedCapacity: count) { output, initialized throws(Failure) in
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let value = try pixel(column, row)
+                    unsafe (output.baseAddress.unsafelyUnwrapped + initialized).initialize(to: value)
+                    initialized += 1
+                }
+            }
         }
         return Self(width: Cardinal(UInt(columns)), height: Cardinal(UInt(rows)), valid: pixels)
     }
@@ -339,8 +354,17 @@ extension Raster {
     internal subscript(column column: Int, row row: Int) -> Pixel { storage[row * columns + column] }
 
     @inlinable
+    @inline(__always)
     internal subscript(column column: Int, row row: Int, edge edge: Edge) -> Pixel {
-        if column >= 0, column < columns, row >= 0, row < rows { return storage[row * columns + column] }
+        if column >= 0, column < columns, row >= 0, row < rows {
+            return storage.withUnsafeBufferPointer { pixels in unsafe pixels[row &* columns &+ column] }
+        }
+        return outside(column: column, row: row, edge: edge)
+    }
+
+    /// The pixel `edge` puts at a position outside the raster.
+    @inlinable
+    internal func outside(column: Int, row: Int, edge: Edge) -> Pixel {
         if case .constant(let pixel) = edge { return pixel }
         precondition(!isEmpty, "An empty raster has no pixel to sample")
         return storage[edge.position(row, in: rows) * columns + edge.position(column, in: columns)]
@@ -361,18 +385,27 @@ extension Raster {
         guard let first = offsets.first, let last = offsets.last, first != 0 || last != 0 else { return self }
         let low = -first
         let high = (down ? rows : columns) - last
-        return try Self.filled(columns: columns, rows: rows) { (x, y) throws(Failure) in
-            let position = down ? y : x
-            if position >= low, position < high {
-                let base = y * columns + x
-                var result = storage[base + first * step]
-                for index in 1..<offsets.count {
-                    result = try mix(result, storage[base + offsets[index] * step], parameters[index])
+        let strides = offsets.map { $0 * step }
+        return try storage.withUnsafeBufferPointer { pixels throws(Failure) -> Self in
+            try strides.withUnsafeBufferPointer { strides throws(Failure) -> Self in
+                try parameters.withUnsafeBufferPointer { parameters throws(Failure) -> Self in
+                    try Self.filled(columns: columns, rows: rows) { x, y throws(Failure) in
+                        let position = down ? y : x
+                        if position >= low, position < high {
+                            let base = y &* columns &+ x
+                            var result = unsafe pixels[base &+ strides[0]]
+                            var index = 1
+                            while index < strides.count {
+                                result = try mix(result, unsafe pixels[base &+ strides[index]], unsafe parameters[index])
+                                index += 1
+                            }
+                            return result
+                        }
+                        return try chain.value(mixing: mix) { offset in
+                            down ? self[column: x, row: y + offset, edge: edge] : self[column: x + offset, row: y, edge: edge]
+                        }
+                    }
                 }
-                return result
-            }
-            return try chain.value(mixing: mix) { offset in
-                down ? self[column: x, row: y + offset, edge: edge] : self[column: x + offset, row: y, edge: edge]
             }
         }
     }
@@ -417,6 +450,9 @@ extension Raster {
         precondition(value.isFinite, "A sample position is finite")
         if let double = value as? Double {
             return Int(Swift.min(Swift.max(double.rounded(.down), -0x1p62), 0x1p62))
+        }
+        if let float = value as? Float {
+            return Int(Swift.min(Swift.max(float.rounded(.down), -0x1p62), 0x1p62))
         }
         let limit = Scalar(sign: .plus, exponent: 62, significand: 1)
         return Int(Swift.min(Swift.max(value.rounded(.down), -limit), limit))
@@ -488,12 +524,16 @@ extension Raster {
         let left = origin(region.x)
         let top = origin(region.y)
         let half: Scalar = 1 / 2
-        return try filled(columns: columns, rows: Int(bitPattern: region.height)) { (column, row) throws(Failure) in
-            let winner = nearest.winners[row * columns + column]
-            guard winner >= 0, let facet = nearest.facets[winner],
-                let sample = facet.sample(x: real(left + column) + half, y: real(top + row) + half)
-            else { return empty }
-            return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
+        return try nearest.winners.withUnsafeBufferPointer { winners throws(Failure) -> Self in
+            try nearest.facets.withUnsafeBufferPointer { facets throws(Failure) -> Self in
+                try filled(columns: columns, rows: Int(bitPattern: region.height)) { column, row throws(Failure) in
+                    let winner = unsafe winners[row &* columns &+ column]
+                    guard winner >= 0, let facet = unsafe facets[winner],
+                        let sample = facet.sample(x: real(left + column) + half, y: real(top + row) + half)
+                    else { return empty }
+                    return try pixel(Ordinal(UInt(winner)), sample.weights, sample.depth)
+                }
+            }
         }
     }
 
@@ -509,10 +549,15 @@ extension Raster {
     ) throws(Failure) -> Self {
         let nearest = nearest(of: triangles, in: region)
         let columns = Int(bitPattern: region.width)
-        return try filled(columns: columns, rows: Int(bitPattern: region.height)) { (column, row) throws(Failure) in
-            let winner = nearest.winners[row * columns + column]
-            guard winner >= 0 else { return empty }
-            return try pixel(Ordinal(UInt(winner)), nearest.depths[row * columns + column])
+        return try nearest.winners.withUnsafeBufferPointer { winners throws(Failure) -> Self in
+            try nearest.depths.withUnsafeBufferPointer { depths throws(Failure) -> Self in
+                try filled(columns: columns, rows: Int(bitPattern: region.height)) { column, row throws(Failure) in
+                    let at = row &* columns &+ column
+                    let winner = unsafe winners[at]
+                    guard winner >= 0 else { return empty }
+                    return try pixel(Ordinal(UInt(winner)), unsafe depths[at])
+                }
+            }
         }
     }
 
@@ -535,32 +580,39 @@ extension Raster {
         var winners = [Int](repeating: -1, count: count)
         var depths = [Scalar](repeating: 0, count: count)
         guard count > 0 else { return (facets, winners, depths) }
-        for triangle in triangles {
-            let number = facets.count
-            let facet = Facet(triangle)
-            facets.append(facet)
-            guard let facet else { continue }
-            let firstColumn = whole(facet.low.x - half, .down, from: left, to: left + columns)
-            let endColumn = whole(facet.high.x - half, .up, from: left - 1, to: left + columns - 1) + 1
-            let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
-            let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
-            guard firstColumn < endColumn, firstRow < endRow else { continue }
-            var row = firstRow
-            while row < endRow {
-                let base = (row - top) * columns - left
-                let y: Scalar = real(row) + half
-                let span = facet.span(y: y, from: firstColumn, to: endColumn)
-                var column = span.first
-                while column < span.end {
-                    if let sample = facet.sample(x: real(column) + half, y: y),
-                        winners[base + column] < 0 || sample.depth < depths[base + column]
-                    {
-                        winners[base + column] = number
-                        depths[base + column] = sample.depth
+        winners.withUnsafeMutableBufferPointer { winners in
+            depths.withUnsafeMutableBufferPointer { depths in
+                for triangle in triangles {
+                    let number = facets.count
+                    let facet = Facet(triangle)
+                    facets.append(facet)
+                    guard let facet else { continue }
+                    let firstColumn = whole(facet.low.x - half, .down, from: left, to: left + columns)
+                    let endColumn = whole(facet.high.x - half, .up, from: left - 1, to: left + columns - 1) + 1
+                    let firstRow = whole(facet.low.y - half, .down, from: top, to: top + rows)
+                    let endRow = whole(facet.high.y - half, .up, from: top - 1, to: top + rows - 1) + 1
+                    guard firstColumn < endColumn, firstRow < endRow else { continue }
+                    let narrow = endColumn - firstColumn <= 4
+                    var row = firstRow
+                    while row < endRow {
+                        let base = (row - top) &* columns &- left
+                        let y: Scalar = real(row) + half
+                        let span = narrow ? (first: firstColumn, end: endColumn) : facet.span(y: y, from: firstColumn, to: endColumn)
+                        let levels = facet.levels(y: y)
+                        var column = span.first
+                        while column < span.end {
+                            if let sample = facet.sample(x: real(column) + half, levels: levels) {
+                                let at = base &+ column
+                                if unsafe winners[at] < 0 || sample.depth < depths[at] {
+                                    unsafe winners[at] = number
+                                    unsafe depths[at] = sample.depth
+                                }
+                            }
+                            column += 1
+                        }
+                        row += 1
                     }
-                    column += 1
                 }
-                row += 1
             }
         }
         return (facets, winners, depths)

@@ -52,11 +52,26 @@ extension Raster.Facet {
     /// takes; `nil` at a point it does not take.
     @inlinable
     internal func sample(x: Scalar, y: Scalar) -> (weights: InlineArray<3, Scalar>, depth: Scalar)? {
-        let first = edges[0].side(x: x, y: y)
+        sample(x: x, levels: levels(y: y))
+    }
+
+    /// What each edge's measure takes from the height alone, the same for every centre of a row.
+    @inlinable
+    @inline(__always)
+    internal func levels(y: Scalar) -> InlineArray<3, Scalar> {
+        [edges[0].level(y: y), edges[1].level(y: y), edges[2].level(y: y)]
+    }
+
+    /// `sample(x:y:)` at a centre of the row whose `levels(y:)` are given: the same numbers, with the
+    /// part each edge's measure takes from the height worked out once for the row.
+    @inlinable
+    @inline(__always)
+    internal func sample(x: Scalar, levels: InlineArray<3, Scalar>) -> (weights: InlineArray<3, Scalar>, depth: Scalar)? {
+        let first = edges[0].side(x: x, level: levels[0])
         guard first > 0 || (first == 0 && edges[0].owns) else { return nil }
-        let second = edges[1].side(x: x, y: y)
+        let second = edges[1].side(x: x, level: levels[1])
         guard second > 0 || (second == 0 && edges[1].owns) else { return nil }
-        let third = edges[2].side(x: x, y: y)
+        let third = edges[2].side(x: x, level: levels[2])
         guard third > 0 || (third == 0 && edges[2].owns) else { return nil }
         let sum = first + second + third
         guard sum > 0 else { return nil }

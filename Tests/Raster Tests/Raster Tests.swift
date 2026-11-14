@@ -1674,3 +1674,307 @@ extension `Raster Tests`.`A cascade of boxes blurs in time that does not grow wi
         #expect(empty.smoothed(horizontal: cascade, vertical: cascade, edge: .wrap) == empty)
     }
 }
+extension `Raster Tests` {
+    @Suite
+    struct `The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {}
+}
+
+extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {
+    fileprivate typealias Quad = SIMD4<Float>
+
+    /// Lanes compared by their bits, so a not-a-number and a negative zero must come out the same too.
+    fileprivate static func same(_ first: Quad, _ second: Quad) -> Bool {
+        (0..<4).allSatisfy { first[$0].bitPattern == second[$0].bitPattern }
+    }
+
+    fileprivate static func same(_ first: [Quad], _ second: [Quad]) -> Bool {
+        first.count == second.count && zip(first, second).allSatisfy { same($0, $1) }
+    }
+
+    fileprivate static func mix(_ from: Quad, _ to: Quad, _ parameter: Float) -> Quad { from + (to - from) * parameter }
+
+    /// A raster of varied lanes, with a not-a-number, an infinity and a negative zero in it when it is large enough.
+    fileprivate static func quads(_ width: Int, _ height: Int, odd: Bool = false) -> Raster<Quad> {
+        Raster(width: Cardinal(UInt(width)), height: Cardinal(UInt(height))) { x, y in
+            let (x, y) = (Int(bitPattern: x), Int(bitPattern: y))
+            let index = y * width + x
+            if odd, index == 5 { return Quad(.nan, 1, -0.0, 2) }
+            if odd, index == 11 { return Quad(.infinity, -3, 0.5, -0.0) }
+            return Quad(Float((x * 7 + y * 13 + x * y * 5) % 17) / 3, Float(x) - Float(y) * 0.37, Float((x + 3 * y) % 5), 1 / Float(1 + x + y))
+        }
+    }
+
+    fileprivate static let sizes: [(Int, Int)] = [(0, 0), (0, 3), (3, 0), (1, 1), (1, 6), (6, 1), (2, 2), (7, 5), (9, 4)]
+
+    fileprivate static func edges(_ pixel: Quad) -> [Raster<Quad>.Edge] { [.extend, .wrap, .mirror, .constant(pixel)] }
+
+    /// The pixel at a position as the law states it, through the raster's checked subscript.
+    fileprivate static func plain(_ raster: Raster<Quad>, _ column: Int, _ row: Int, _ edge: Raster<Quad>.Edge) -> Quad {
+        let (width, height) = (Int(bitPattern: raster.width), Int(bitPattern: raster.height))
+        if column >= 0, column < width, row >= 0, row < height { return raster[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))] }
+        func position(_ position: Int, _ count: Int) -> Int {
+            switch edge {
+            case .extend, .constant:
+                return min(max(position, 0), count - 1)
+
+            case .wrap:
+                return ((position % count) + count) % count
+
+            case .mirror:
+                let positive = ((position % (2 * count)) + 2 * count) % (2 * count)
+                return positive < count ? positive : 2 * count - 1 - positive
+            }
+        }
+        if case .constant(let pixel) = edge { return pixel }
+        return raster[x: Ordinal(UInt(position(column, width))), y: Ordinal(UInt(position(row, height)))]
+    }
+
+    fileprivate static func floor(_ value: Float) -> Int { Int(min(max(value.rounded(.down), -0x1p62), 0x1p62)) }
+
+    /// `sample(at:_:edge:mixing:)` as the law states it.
+    fileprivate static func plain(_ raster: Raster<Quad>, at point: Point<2, Float>, _ sampling: Raster<Quad>.Sampling, _ edge: Raster<Quad>.Edge) -> Quad {
+        switch sampling {
+        case .nearest:
+            return plain(raster, floor(point.x), floor(point.y), edge)
+
+        case .bilinear:
+            let across = point.x - 0.5
+            let down = point.y - 0.5
+            let (left, top) = (floor(across), floor(down))
+            let (right, below) = (across - Float(left), down - Float(top))
+            func row(_ row: Int) -> Quad {
+                let first = plain(raster, left, row, edge)
+                return right > 0 ? mix(first, plain(raster, left + 1, row, edge), right) : first
+            }
+            let upper = row(top)
+            return below > 0 ? mix(upper, row(top + 1), below) : upper
+        }
+    }
+
+    @Test
+    func `sampling, at every edge, inside, outside and on the border`() {
+        let positions: [Float] = [-1e30, -7.25, -2, -1, -0.75, -0.5, -0.0, 0, 0.25, 0.5, 0.999, 1, 1.5, 2.01, 3.5, 4.75, 5.5, 6, 6.5, 8.125, 9.5, 10, 13.7, 1e30]
+        for (width, height) in Self.sizes {
+            let raster = Self.quads(width, height, odd: true)
+            for edge in Self.edges(Quad(0.25, -1, .nan, 4)) {
+                if raster.isEmpty, case .constant = edge {} else if raster.isEmpty { continue }
+                for sampling in [Raster<Quad>.Sampling.nearest, .bilinear] {
+                    for y in positions {
+                        for x in positions {
+                            let point = Point<2, Float>(x: x, y: y)
+                            let fast = raster.sample(at: point, sampling, edge: edge, mixing: Self.mix)
+                            #expect(Self.same(fast, Self.plain(raster, at: point, sampling, edge)), "\(width)×\(height) \(edge) \(sampling) at \(x), \(y)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `convolved(horizontal:vertical:edge:mixing:)` as the law states it: each pixel the chain of
+    /// interpolations over the weights that are not zero, along the rows and then down the columns.
+    fileprivate static func plain(_ raster: Raster<Quad>, convolving horizontal: [Float], _ vertical: [Float], edge: Raster<Quad>.Edge) -> Raster<Quad> {
+        func pass(_ source: Raster<Quad>, _ weights: [Float], down: Bool) -> Raster<Quad> {
+            let radius = weights.count / 2
+            if weights.count == 1 { return source }
+            return Raster(width: source.width, height: source.height) { x, y in
+                let (x, y) = (Int(bitPattern: x), Int(bitPattern: y))
+                var result: Quad?
+                var total: Float = 0
+                for (index, weight) in weights.enumerated() where weight > 0 {
+                    total += weight
+                    let offset = index - radius
+                    let pixel = down ? plain(source, x, y + offset, edge) : plain(source, x + offset, y, edge)
+                    result = result.map { mix($0, pixel, weight / total) } ?? pixel
+                }
+                return result ?? (down ? plain(source, x, y, edge) : plain(source, x, y, edge))
+            }
+        }
+        return pass(pass(raster, horizontal, down: false), vertical, down: true)
+    }
+
+    @Test
+    func `convolving, at every edge, with kernels wider than the raster`() throws {
+        let kernels: [Raster<Quad>.Kernel<Float>] = [
+            .identity, .box(radius: 1), try .init(weights: [0.05, 0.24, 0.42, 0.24, 0.05]), try .init(weights: [0, 1, 0, 2, 0]), try .init(weights: [3, 0, 0, 0, 0, 0, 1]),
+        ]
+        for (width, height) in Self.sizes where width * height > 0 {
+            let raster = Self.quads(width, height, odd: true)
+            for edge in Self.edges(Quad(0.25, -1, 9, 4)) {
+                for (horizontal, vertical) in zip(kernels, kernels.reversed()) {
+                    let fast = raster.convolved(horizontal: horizontal, vertical: vertical, edge: edge, mixing: Self.mix)
+                    let plain = Self.plain(raster, convolving: horizontal.weights, vertical.weights, edge: edge)
+                    #expect(Self.same(fast.pixels, plain.pixels), "\(width)×\(height) \(edge) \(horizontal.weights.count)/\(vertical.weights.count)")
+                }
+            }
+        }
+    }
+
+    /// One axis of `smoothed(horizontal:vertical:edge:)` as the law states it: each line lengthened by the
+    /// reach through the edge, then each pass a running sum that slides along it.
+    fileprivate static func plain(_ raster: Raster<Quad>, smoothing cascade: Raster<Quad>.Cascade<Float>, down: Bool, edge: Raster<Quad>.Edge) -> Raster<Quad> {
+        let passes = Int(bitPattern: cascade.count)
+        guard passes > 0 else { return raster }
+        let radius = Int(bitPattern: cascade.radius)
+        let reach = Int(bitPattern: cascade.reach)
+        let scale = 1 / (Float(2 * radius + 1) + 2 * cascade.end)
+        let (width, height) = (Int(bitPattern: raster.width), Int(bitPattern: raster.height))
+        let lines = (0..<(down ? width : height)).map { index in
+            var line = (0..<((down ? height : width) + 2 * reach)).map { position in
+                down ? plain(raster, index, position - reach, edge) : plain(raster, position - reach, index, edge)
+            }
+            (0..<passes).forEach { _ in
+                let kept = line.count - 2 * (radius + 1)
+                var sum = line[1...(2 * radius + 1)].reduce(Quad.zero, +)
+                line = (0..<kept).map { at in
+                    let centre = at + radius + 1
+                    let value = (sum + cascade.end * (line[centre - radius - 1] + line[centre + radius + 1])) * scale
+                    if at + 1 < kept { sum += line[centre + radius + 1] - line[centre - radius] }
+                    return value
+                }
+            }
+            return line
+        }
+        return Raster(width: raster.width, height: raster.height) { x, y in
+            let (x, y) = (Int(bitPattern: x), Int(bitPattern: y))
+            return down ? lines[x][y] : lines[y][x]
+        }
+    }
+
+    @Test
+    func `smoothing, at every edge, with cascades that reach beyond the raster`() throws {
+        let cascades: [Raster<Quad>.Cascade<Float>] = [
+            .identity, try .gaussian(deviation: 0.6), try .gaussian(deviation: 2.3), try .gaussian(deviation: 1.1, count: 3),
+            try .init(count: 2, radius: 0, end: 0.5), try .init(count: 1, radius: 4, end: 1),
+        ]
+        for (width, height) in Self.sizes + [(23, 17)] where width * height > 0 {
+            for odd in [false, true] {
+                let raster = Self.quads(width, height, odd: odd)
+                for edge in Self.edges(Quad(0.25, -1, 9, 4)) {
+                    for (horizontal, vertical) in zip(cascades, cascades.reversed()) {
+                        let fast = raster.smoothed(horizontal: horizontal, vertical: vertical, edge: edge)
+                        let plain = Self.plain(Self.plain(raster, smoothing: horizontal, down: false, edge: edge), smoothing: vertical, down: true, edge: edge)
+                        #expect(Self.same(fast.pixels, plain.pixels), "\(width)×\(height) \(edge) \(horizontal) \(vertical)")
+                    }
+                }
+            }
+        }
+    }
+}
+
+extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {
+    /// A fragment by the bits of its numbers.
+    fileprivate struct Fragment: Equatable {
+        var triangle: Int
+        var bits: [String]
+
+        init<Scalar: BinaryFloatingPoint>(_ triangle: Int, _ numbers: [Scalar]) {
+            self.triangle = triangle
+            self.bits = numbers.map { "\($0.sign) \($0.exponentBitPattern) \($0.significandBitPattern)" }
+        }
+    }
+
+    /// The weights on the corners as given and the depth at a point, or `nil` where the triangle does not
+    /// take it, as the law states it: each edge measured from its own earlier end, whichever way it is walked.
+    fileprivate static func taken<Scalar: BinaryFloatingPoint>(_ triangle: InlineArray<3, Point<3, Scalar>>, x: Scalar, y: Scalar) -> (weights: [Scalar], depth: Scalar)? {
+        guard triangle.indices.allSatisfy({ triangle[$0].x.isFinite && triangle[$0].y.isFinite && triangle[$0].z.isFinite }) else { return nil }
+        let first = triangle[0]
+        var second = triangle[1]
+        var third = triangle[2]
+        let turn = (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
+        guard turn > 0 || turn < 0 else { return nil }
+        if turn < 0 { swap(&second, &third) }
+        func side(_ start: Point<3, Scalar>, _ end: Point<3, Scalar>) -> Scalar? {
+            let reversed = end.y < start.y || (end.y == start.y && end.x < start.x)
+            let (anchor, far) = reversed ? (end, start) : (start, end)
+            let measure = (far.x - anchor.x) * (y - anchor.y) - (far.y - anchor.y) * (x - anchor.x)
+            let signed = reversed ? -measure : measure
+            let owns = end.y - start.y < 0 || (end.y - start.y == 0 && end.x - start.x > 0)
+            return signed > 0 || (signed == 0 && owns) ? signed : nil
+        }
+        guard let one = side(second, third), let two = side(third, first), let three = side(first, second) else { return nil }
+        let sum = one + two + three
+        guard sum > 0 else { return nil }
+        let weights = [one / sum, two / sum, three / sum]
+        let depth = weights[0] * first.z + weights[1] * second.z + weights[2] * third.z
+        return (turn < 0 ? [weights[0], weights[2], weights[1]] : weights, depth)
+    }
+
+    /// `fragments(of:in:empty:_:)` as the law states it: every triangle asked at every centre, the smaller
+    /// depth winning, and of equal depths the earlier triangle.
+    fileprivate static func plain<Scalar: BinaryFloatingPoint>(
+        _ triangles: [InlineArray<3, Point<3, Scalar>>],
+        left: Int,
+        top: Int,
+        width: Int,
+        height: Int
+    ) -> [(number: Int, weights: [Scalar], depth: Scalar)?] {
+        (0..<(width * height)).map { index in
+            let x = Scalar(left + index % width) + 1 / 2
+            let y = Scalar(top + index / width) + 1 / 2
+            var best: (number: Int, weights: [Scalar], depth: Scalar)?
+            for (number, triangle) in triangles.enumerated() {
+                guard let hit = taken(triangle, x: x, y: y) else { continue }
+                if let current = best, !(hit.depth < current.depth) { continue }
+                best = (number, hit.weights, hit.depth)
+            }
+            return best
+        }
+    }
+
+    fileprivate static func compare<Scalar: BinaryFloatingPoint>(_ triangles: [InlineArray<3, Point<3, Scalar>>], _ kind: String) {
+        let regions: [(Int, Int, Int, Int)] = [(0, 0, 23, 17), (0, 0, 0, 0), (3, 2, 0, 5), (4, 5, 1, 1), (2, 1, 19, 14), (20, 15, 9, 7), (60, 3, 5, 5)]
+        for (left, top, width, height) in regions {
+            let region = Raster<Fragment?>.Region(x: Ordinal(UInt(left)), y: Ordinal(UInt(top)), width: Cardinal(UInt(width)), height: Cardinal(UInt(height)))
+            let plain = Self.plain(triangles, left: left, top: top, width: width, height: height)
+            let weighted = Raster<Fragment?>.fragments(of: triangles, in: region, empty: nil) { number, weights, depth in
+                Fragment(Int(bitPattern: number), [weights[0], weights[1], weights[2], depth])
+            }
+            let bare = Raster<Fragment?>.fragments(of: triangles, in: region, empty: nil) { number, depth in
+                Fragment(Int(bitPattern: number), [depth])
+            }
+            #expect(weighted.pixels == plain.map { $0.map { Fragment($0.number, $0.weights + [$0.depth]) } }, "\(kind) \(Scalar.self) in \(left), \(top), \(width)×\(height)")
+            #expect(bare.pixels == plain.map { $0.map { Fragment($0.number, [$0.depth]) } }, "\(kind) \(Scalar.self) without weights in \(left), \(top), \(width)×\(height)")
+        }
+    }
+
+    fileprivate static func triangles<Scalar: BinaryFloatingPoint>(_ corners: [[(x: Double, y: Double, z: Double)]], as: Scalar.Type) -> [InlineArray<3, Point<3, Scalar>>] {
+        corners.map { list in
+            [
+                Point(x: Scalar(list[0].x), y: Scalar(list[0].y), z: Scalar(list[0].z)),
+                Point(x: Scalar(list[1].x), y: Scalar(list[1].y), z: Scalar(list[1].z)),
+                Point(x: Scalar(list[2].x), y: Scalar(list[2].y), z: Scalar(list[2].z)),
+            ]
+        }
+    }
+
+    @Test
+    func `the nearest of overlapping triangles, wide, narrow, tiny, clipped, flat and not finite`() {
+        var seeded = `Raster Tests`.`A row is scanned between the triangle's edges and finds what a scan of every pixel finds`.Seeded(state: 7)
+        var list: [[(x: Double, y: Double, z: Double)]] = []
+        (0..<90).forEach { index in
+            let reach = [40.0, 9, 3, 0.8][index % 4]
+            let centre = (x: seeded.number(-6, 29), y: seeded.number(-6, 23))
+            let rule: FloatingPointRoundingRule = index.isMultiple(of: 3) ? .down : .toNearestOrEven
+            let corners = (0..<3).map { _ in
+                (x: centre.x + seeded.number(-reach, reach), y: centre.y + seeded.number(-reach, reach), z: seeded.number(0, 3).rounded(rule))
+            }
+            list.append(corners)
+        }
+        // Corners on centres, edges through centres and along rows, two triangles sharing an edge.
+        list.append([(5.5, 5.5, 1), (12.5, 5.5, 1), (5.5, 12.5, 1)])
+        list.append([(12.5, 5.5, 1), (5.5, 12.5, 1), (12.5, 12.5, 1)])
+        list.append([(0, 3.5, 0.5), (23, 3.5, 0.5), (11, 9.5, 0.5)])
+        list.append([(7.5, -2, 0.2), (7.5, 30, 0.2), (8.0, 4, 0.2)])
+        // Far off, flat, and not finite: they take nothing and still count in the numbering.
+        list.append([(-1e30, -1e30, 2), (1e30, -1e30, 2), (3, 1e30, 2)])
+        list.append([(3, 3, 0), (9, 9, 0), (6, 6, 0)])
+        list.append([(.nan, 3, 0), (9, 9, 0), (6, 1, 0)])
+        list.append([(1, 3, .infinity), (9, 9, 0), (6, 1, 0)])
+        list.append([(2, 2, -1), (20, 4, -1), (6, 15, -1)])
+        Self.compare(Self.triangles(list, as: Double.self), "mixed")
+        Self.compare(Self.triangles(list, as: Float.self), "mixed")
+        Self.compare(Self.triangles(list, as: Float16.self), "mixed")
+        Self.compare(Self.triangles([], as: Double.self), "none")
+    }
+}
