@@ -1,22 +1,10 @@
 import Foundation
+import Numeric
+import Raster
 import Testing
 
 #if Geometry
     import Angle
-    import Numeric
-    import Raster
-#else
-    public import Raster
-
-    extension Double: @retroactive Exponential.`Protocol` {
-        public static func exp(_ x: Double) -> Double { Foundation.exp(x) }
-        public static func expm1(_ x: Double) -> Double { Foundation.expm1(x) }
-        public static func exp2(_ x: Double) -> Double { Foundation.exp2(x) }
-        public static func log(_ x: Double) -> Double { Foundation.log(x) }
-        public static func log1p(_ x: Double) -> Double { Foundation.log1p(x) }
-        public static func log2(_ x: Double) -> Double { Foundation.log2(x) }
-        public static func log10(_ x: Double) -> Double { Foundation.log10(x) }
-    }
 #endif
 
 enum `Raster Tests` {}
@@ -1676,19 +1664,17 @@ extension `Raster Tests`.`A cascade of boxes blurs in time that does not grow wi
 }
 extension `Raster Tests` {
     @Suite
-    struct `The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {}
+    struct `The fast paths give the same value as a plain reading of one pixel at a time` {}
 }
 
-extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {
+extension `Raster Tests`.`The fast paths give the same value as a plain reading of one pixel at a time` {
     fileprivate typealias Quad = SIMD4<Float>
 
-    /// Lanes compared by their bits, so a not-a-number and a negative zero must come out the same too.
-    fileprivate static func same(_ first: Quad, _ second: Quad) -> Bool {
-        (0..<4).allSatisfy { first[$0].bitPattern == second[$0].bitPattern }
-    }
-
+    /// Lanes compared as `Numeric.identical` does: numbers by their bits, so a negative zero and every
+    /// rounding difference count, and any not-a-number as any other, since IEEE 754 leaves the sign and
+    /// payload of one that arithmetic produces to the processor.
     fileprivate static func same(_ first: [Quad], _ second: [Quad]) -> Bool {
-        first.count == second.count && zip(first, second).allSatisfy { same($0, $1) }
+        first.count == second.count && zip(first, second).allSatisfy { Numeric.identical($0, $1) }
     }
 
     fileprivate static func mix(_ from: Quad, _ to: Quad, _ parameter: Float) -> Quad { from + (to - from) * parameter }
@@ -1763,7 +1749,7 @@ extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading
                         for x in positions {
                             let point = Point<2, Float>(x: x, y: y)
                             let fast = raster.sample(at: point, sampling, edge: edge, mixing: Self.mix)
-                            #expect(Self.same(fast, Self.plain(raster, at: point, sampling, edge)), "\(width)×\(height) \(edge) \(sampling) at \(x), \(y)")
+                            #expect(Numeric.identical(fast, Self.plain(raster, at: point, sampling, edge)), "\(width)×\(height) \(edge) \(sampling) at \(x), \(y)")
                         }
                     }
                 }
@@ -1862,7 +1848,7 @@ extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading
     }
 }
 
-extension `Raster Tests`.`The fast paths give, bit for bit, what a plain reading of one pixel at a time gives` {
+extension `Raster Tests`.`The fast paths give the same value as a plain reading of one pixel at a time` {
     /// A fragment by the bits of its numbers.
     fileprivate struct Fragment: Equatable {
         var triangle: Int

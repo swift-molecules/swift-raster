@@ -42,7 +42,7 @@ let package = Package(
             dependencies: [
                 .target(name: "Raster"),
                 .product(name: "Angle", package: "swift-angle", condition: .when(traits: ["Geometry"])),
-                .product(name: "Numeric", package: "swift-numeric", condition: .when(traits: ["Geometry"])),
+                .product(name: "Numeric", package: "swift-numeric"),
             ]
         ),
     ],
