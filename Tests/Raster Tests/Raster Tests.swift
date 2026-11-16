@@ -1963,4 +1963,31 @@ extension `Raster Tests`.`The fast paths give the same value as a plain reading 
         Self.compare(Self.triangles(list, as: Float16.self), "mixed")
         Self.compare(Self.triangles([], as: Double.self), "none")
     }
+
+    @Test
+    func `a stack of triangles whose depths differ by an ulp, nearest first and last`() {
+        func stack<Scalar: BinaryFloatingPoint>(_ scalar: Scalar.Type, rising: Bool) -> [InlineArray<3, Point<3, Scalar>>] {
+            var depth: Scalar = 1
+            var depths: [Scalar] = []
+            (0..<12).forEach { _ in
+                depths.append(depth)
+                depth = depth.nextUp
+            }
+            if !rising { depths.reverse() }
+            return depths.enumerated().map { index, depth in
+                let tilt = index.isMultiple(of: 2) ? depth : depth.nextDown
+                let shift = Scalar(index % 3)
+                return [
+                    Point(x: -2 + shift, y: -1, z: depth),
+                    Point(x: 30, y: 2 + shift, z: tilt),
+                    Point(x: 3, y: 25 - shift, z: depth),
+                ]
+            }
+        }
+        for rising in [true, false] {
+            Self.compare(stack(Double.self, rising: rising), "stack")
+            Self.compare(stack(Float.self, rising: rising), "stack")
+            Self.compare(stack(Float16.self, rising: rising), "stack")
+        }
+    }
 }

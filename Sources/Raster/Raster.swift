@@ -601,8 +601,12 @@ extension Raster {
                         let levels = facet.levels(y: y)
                         var column = span.first
                         while column < span.end {
+                            let at = base &+ column
+                            if unsafe winners[at] >= 0, unsafe depths[at] < facet.floor {
+                                column += 1
+                                continue
+                            }
                             if let sample = facet.sample(x: real(column) + half, levels: levels) {
-                                let at = base &+ column
                                 if unsafe winners[at] < 0 || sample.depth < depths[at] {
                                     unsafe winners[at] = number
                                     unsafe depths[at] = sample.depth

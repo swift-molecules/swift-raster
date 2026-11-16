@@ -15,6 +15,10 @@ extension Raster {
         /// Whether the second and third corner were exchanged to turn the triangle the working way round.
         @usableFromInline
         internal let exchanged: Bool
+        /// Below every depth `sample` can give: the least corner depth less a margin larger than the rounding
+        /// of the weights and their sum, so that a depth already lower than this is never beaten by the triangle.
+        @usableFromInline
+        internal let floor: Scalar
         @usableFromInline
         internal let low: (x: Scalar, y: Scalar)
         @usableFromInline
@@ -41,6 +45,8 @@ extension Raster {
                 Border(from: (first.x, first.y), to: (second.x, second.y)),
             ]
             depths = [first.z, second.z, third.z]
+            let spread = first.z.magnitude + second.z.magnitude + third.z.magnitude
+            floor = Swift.min(first.z, second.z, third.z) - 16 * Scalar.ulpOfOne * spread
             low = (Swift.min(first.x, second.x, third.x), Swift.min(first.y, second.y, third.y))
             high = (Swift.max(first.x, second.x, third.x), Swift.max(first.y, second.y, third.y))
         }
