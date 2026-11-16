@@ -1,8 +1,6 @@
-#if Geometry
-    public import Direction
-    public import Geometry
-    public import Numeric
-#endif
+public import Direction
+public import Geometry
+public import Numeric
 
 public struct Raster<Pixel> {
     public let width: Cardinal
@@ -647,64 +645,62 @@ extension Raster {
     }
 }
 
-#if Geometry
-    extension Raster where Pixel: BinaryFloatingPoint {
-        /// For each pixel of `region`, the part of its square that lies inside `path` under `rule`, from 0 to 1.
-        /// The path is in raster space, and curves are made straight to within `tolerance` first.
-        @inlinable
-        public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
-            of path: Geometry<Scalar, Space>.Path,
-            rule: Winding.Rule,
-            in region: Region,
-            tolerance: Geometry<Scalar, Space>.Length
-        ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
-            let outline = try path.flattened(tolerance: tolerance)
-            let columns = Int(bitPattern: region.width)
-            let rows = Int(bitPattern: region.height)
-            precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
-            let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
-            precondition(!overflow, "A raster's pixel count fits a signed word")
-            guard count > 0 else { return Self(width: region.width, height: region.height, valid: []) }
-            var sides: [Fill<Scalar>.Side] = []
-            for subpath in outline.subpaths {
-                var corners: [(x: Scalar, y: Scalar)] = [(subpath.startPoint[0], subpath.startPoint[1])]
-                for segment in subpath.segments {
-                    guard case .line(let line) = segment else { continue }
-                    corners.append((line.start[0], line.start[1]))
-                    corners.append((line.end[0], line.end[1]))
-                }
-                guard corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite }), var previous = corners.last else { continue }
-                for corner in corners {
-                    if let side = Fill<Scalar>.Side(from: previous, to: corner) { sides.append(side) }
-                    previous = corner
-                }
+extension Raster where Pixel: BinaryFloatingPoint {
+    /// For each pixel of `region`, the part of its square that lies inside `path` under `rule`, from 0 to 1.
+    /// The path is in raster space, and curves are made straight to within `tolerance` first.
+    @inlinable
+    public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
+        of path: Geometry<Scalar, Space>.Path,
+        rule: Winding.Rule,
+        in region: Region,
+        tolerance: Geometry<Scalar, Space>.Length
+    ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
+        let outline = try path.flattened(tolerance: tolerance)
+        let columns = Int(bitPattern: region.width)
+        let rows = Int(bitPattern: region.height)
+        precondition(columns >= 0 && rows >= 0, "A raster's width and height fit a signed word")
+        let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
+        precondition(!overflow, "A raster's pixel count fits a signed word")
+        guard count > 0 else { return Self(width: region.width, height: region.height, valid: []) }
+        var sides: [Fill<Scalar>.Side] = []
+        for subpath in outline.subpaths {
+            var corners: [(x: Scalar, y: Scalar)] = [(subpath.startPoint[0], subpath.startPoint[1])]
+            for segment in subpath.segments {
+                guard case .line(let line) = segment else { continue }
+                corners.append((line.start[0], line.start[1]))
+                corners.append((line.end[0], line.end[1]))
             }
-            let pixels = Fill<Scalar>.coverage(
-                of: sides,
-                rule: rule,
-                left: origin(region.x),
-                top: origin(region.y),
-                columns: columns,
-                rows: rows
-            )
-            return Self(width: region.width, height: region.height, valid: pixels)
+            guard corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite }), var previous = corners.last else { continue }
+            for corner in corners {
+                if let side = Fill<Scalar>.Side(from: previous, to: corner) { sides.append(side) }
+                previous = corner
+            }
         }
-
-        /// `coverage(of:rule:in:tolerance:)` over the whole raster of the given size.
-        @inlinable
-        public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
-            of path: Geometry<Scalar, Space>.Path,
-            rule: Winding.Rule,
-            width: Cardinal,
-            height: Cardinal,
-            tolerance: Geometry<Scalar, Space>.Length
-        ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
-            try coverage(
-                of: path,
-                rule: rule,
-                in: Region(x: .zero, y: .zero, width: width, height: height),
-                tolerance: tolerance
-            )
-        }
+        let pixels = Fill<Scalar>.coverage(
+            of: sides,
+            rule: rule,
+            left: origin(region.x),
+            top: origin(region.y),
+            columns: columns,
+            rows: rows
+        )
+        return Self(width: region.width, height: region.height, valid: pixels)
     }
-#endif
+
+    /// `coverage(of:rule:in:tolerance:)` over the whole raster of the given size.
+    @inlinable
+    public static func coverage<Scalar: BinaryFloatingPoint & Numeric.Transcendental, Space>(
+        of path: Geometry<Scalar, Space>.Path,
+        rule: Winding.Rule,
+        width: Cardinal,
+        height: Cardinal,
+        tolerance: Geometry<Scalar, Space>.Length
+    ) throws(Geometry<Scalar, Space>.Path.Error) -> Self {
+        try coverage(
+            of: path,
+            rule: rule,
+            in: Region(x: .zero, y: .zero, width: width, height: height),
+            tolerance: tolerance
+        )
+    }
+}

@@ -1,11 +1,8 @@
+import Angle
 import Foundation
 import Numeric
 import Raster
 import Testing
-
-#if Geometry
-    import Angle
-#endif
 
 enum `Raster Tests` {}
 
@@ -1184,393 +1181,391 @@ extension `Raster Tests`.`A row is scanned between the triangle's edges and find
     }
 }
 
-#if Geometry
-    extension `Raster Tests` {
-        @Suite
-        struct `A path covers of each pixel the area that lies inside it` {}
+extension `Raster Tests` {
+    @Suite
+    struct `A path covers of each pixel the area that lies inside it` {}
+}
+
+extension `Raster Tests`.`A path covers of each pixel the area that lies inside it` {
+    fileprivate typealias Geo = Geometry<Double, Void>
+    fileprivate typealias Corner = (x: Double, y: Double)
+
+    fileprivate static func at(_ x: Double, _ y: Double) -> Geo.Point<2> { .init([x, y]) }
+
+    /// A closed subpath of straight lines through the corners.
+    fileprivate static func ring(_ corners: [Corner]) -> Geo.Path.Subpath {
+        var segments: [Geo.Path.Segment] = []
+        corners.indices.dropFirst().forEach { index in
+            segments.append(.line(.init(start: at(corners[index - 1].x, corners[index - 1].y), end: at(corners[index].x, corners[index].y))))
+        }
+        return .init(startPoint: at(corners[0].x, corners[0].y), segments: segments, isClosed: true)
     }
 
-    extension `Raster Tests`.`A path covers of each pixel the area that lies inside it` {
-        fileprivate typealias Geo = Geometry<Double, Void>
-        fileprivate typealias Corner = (x: Double, y: Double)
+    fileprivate static func path(_ rings: [Corner]...) -> Geo.Path { .init(subpaths: rings.map(ring)) }
 
-        fileprivate static func at(_ x: Double, _ y: Double) -> Geo.Point<2> { .init([x, y]) }
+    fileprivate static func box(_ left: Double, _ top: Double, _ right: Double, _ bottom: Double) -> [Corner] {
+        [(left, top), (right, top), (right, bottom), (left, bottom)]
+    }
 
-        /// A closed subpath of straight lines through the corners.
-        fileprivate static func ring(_ corners: [Corner]) -> Geo.Path.Subpath {
-            var segments: [Geo.Path.Segment] = []
-            corners.indices.dropFirst().forEach { index in
-                segments.append(.line(.init(start: at(corners[index - 1].x, corners[index - 1].y), end: at(corners[index].x, corners[index].y))))
-            }
-            return .init(startPoint: at(corners[0].x, corners[0].y), segments: segments, isClosed: true)
-        }
+    fileprivate static func circle(_ x: Double, _ y: Double, radius: Double) -> Geo.Path.Subpath {
+        let arc = Geo.Arc(center: at(x, y), radius: .init(radius), startAngle: .zero, endAngle: Radian(_unchecked: 2 * Double.pi))
+        return .init(startPoint: at(x + radius, y), segments: [.arc(arc)], isClosed: true)
+    }
 
-        fileprivate static func path(_ rings: [Corner]...) -> Geo.Path { .init(subpaths: rings.map(ring)) }
+    fileprivate static func cover(
+        _ path: Geo.Path,
+        _ rule: Winding.Rule,
+        _ width: Cardinal,
+        _ height: Cardinal,
+        tolerance: Double = 0.01
+    ) throws(Geo.Path.Error) -> Raster<Double> {
+        try Raster<Double>.coverage(of: path, rule: rule, width: width, height: height, tolerance: .init(tolerance))
+    }
 
-        fileprivate static func box(_ left: Double, _ top: Double, _ right: Double, _ bottom: Double) -> [Corner] {
-            [(left, top), (right, top), (right, bottom), (left, bottom)]
-        }
+    /// The length of pixel `pixel` along one axis that lies between two bounds.
+    fileprivate static func overlap(_ low: Double, _ high: Double, _ pixel: Ordinal) -> Double {
+        let start = Double(Int(bitPattern: pixel))
+        return max(0, min(high, start + 1) - max(low, start))
+    }
 
-        fileprivate static func circle(_ x: Double, _ y: Double, radius: Double) -> Geo.Path.Subpath {
-            let arc = Geo.Arc(center: at(x, y), radius: .init(radius), startAngle: .zero, endAngle: Radian(_unchecked: 2 * Double.pi))
-            return .init(startPoint: at(x + radius, y), segments: [.arc(arc)], isClosed: true)
-        }
+    /// The area of each pixel inside a box, from the box's bounds.
+    fileprivate static func area(of box: [Corner], _ width: Cardinal, _ height: Cardinal) -> Raster<Double> {
+        Raster(width: width, height: height) { x, y in overlap(box[0].x, box[2].x, x) * overlap(box[0].y, box[2].y, y) }
+    }
 
-        fileprivate static func cover(
-            _ path: Geo.Path,
-            _ rule: Winding.Rule,
-            _ width: Cardinal,
-            _ height: Cardinal,
-            tolerance: Double = 0.01
-        ) throws(Geo.Path.Error) -> Raster<Double> {
-            try Raster<Double>.coverage(of: path, rule: rule, width: width, height: height, tolerance: .init(tolerance))
-        }
-
-        /// The length of pixel `pixel` along one axis that lies between two bounds.
-        fileprivate static func overlap(_ low: Double, _ high: Double, _ pixel: Ordinal) -> Double {
-            let start = Double(Int(bitPattern: pixel))
-            return max(0, min(high, start + 1) - max(low, start))
-        }
-
-        /// The area of each pixel inside a box, from the box's bounds.
-        fileprivate static func area(of box: [Corner], _ width: Cardinal, _ height: Cardinal) -> Raster<Double> {
-            Raster(width: width, height: height) { x, y in overlap(box[0].x, box[2].x, x) * overlap(box[0].y, box[2].y, y) }
-        }
-
-        /// The share of an n × n grid of points in each pixel that the test holds.
-        fileprivate static func sampled(_ width: Cardinal, _ height: Cardinal, grid: Int, _ holds: (Double, Double) -> Bool) -> Raster<Double> {
-            Raster(width: width, height: height) { x, y in
-                var inside = 0
-                (0..<grid).forEach { row in
-                    (0..<grid).forEach { column in
-                        let point = (Double(Int(bitPattern: x)) + (Double(column) + 0.5) / Double(grid), Double(Int(bitPattern: y)) + (Double(row) + 0.5) / Double(grid))
-                        if holds(point.0, point.1) { inside += 1 }
-                    }
-                }
-                return Double(inside) / Double(grid * grid)
-            }
-        }
-
-        fileprivate static func sum(_ raster: Raster<Double>) -> Double { raster.reduce(0, +) }
-
-        /// The distance from a point to the nearest point of the straight run through the corners.
-        fileprivate static func distance(_ x: Double, _ y: Double, to corners: [Corner]) -> Double {
-            var best = Double.infinity
-            corners.indices.dropFirst().forEach { index in
-                let a = corners[index - 1]
-                let b = corners[index]
-                let chord = (x: b.x - a.x, y: b.y - a.y)
-                let squared = chord.x * chord.x + chord.y * chord.y
-                let along = squared > 0 ? min(max(((x - a.x) * chord.x + (y - a.y) * chord.y) / squared, 0), 1) : 0
-                let away = (x: x - a.x - along * chord.x, y: y - a.y - along * chord.y)
-                best = min(best, (away.x * away.x + away.y * away.y).squareRoot())
-            }
-            return best
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `a rectangle along the axes covers of each pixel exactly the area it overlaps`(rule: Winding.Rule) throws {
-            let box = Self.box(1.25, 0.5, 4.5, 2.75)
-            let expected = Self.area(of: box, 6, 4)
-            #expect(try Self.cover(Self.path(box), rule, 6, 4) == expected)
-            #expect(try Self.cover(Self.path(box.reversed()), rule, 6, 4) == expected)
-            #expect(expected[x: 1, y: 0] == 0.375 && expected[x: 4, y: 2] == 0.375 && expected[x: 2, y: 1] == 1 && expected[x: 5, y: 1] == 0)
-
-            let uneven = Self.box(0.1, 0.2, 2.3, 1.7)
-            #expect(`Raster Tests`.close(try Self.cover(Self.path(uneven), rule, 4, 3), Self.area(of: uneven, 4, 3), within: 1e-15))
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `a pixel wholly inside is exactly one and a pixel wholly outside exactly zero`(rule: Winding.Rule) throws {
-            let corners: [Corner] = [(3.1, 20.4), (18.7, 2.2), (37.3, 17.9), (21.6, 38.8)]
-            /// How far a point is on the inner side of the line through corner `index` and the next.
-            func side(_ index: Int, _ x: Double, _ y: Double) -> Double {
-                let a = corners[index]
-                let b = corners[(index + 1) % 4]
-                return (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
-            }
-            let coverage = try Self.cover(Self.path(corners), rule, 40, 40)
-            let narrow = try Raster<Float>.coverage(of: Self.path(corners), rule: rule, width: 40, height: 40, tolerance: 0.01)
-            var counts = (inside: 0, outside: 0, edge: 0)
-            (0..<40).forEach { row in
-                (0..<40).forEach { column in
-                    let squares = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map { (Double(column) + $0.0, Double(row) + $0.1) }
-                    let within = (0..<4).allSatisfy { index in squares.allSatisfy { side(index, $0.0, $0.1) > 1e-9 } }
-                    let beyond = (0..<4).contains { index in squares.allSatisfy { side(index, $0.0, $0.1) < -1e-9 } }
-                    let value = coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
-                    let single = narrow[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
-                    if within {
-                        #expect(value == 1 && single == 1, "pixel (\(column), \(row))")
-                        counts.inside += 1
-                    } else if beyond {
-                        #expect(value == 0 && single == 0, "pixel (\(column), \(row))")
-                        counts.outside += 1
-                    } else {
-                        #expect(value >= 0 && value <= 1 && single >= 0 && single <= 1)
-                        #expect(abs(Double(single) - value) < 1e-6)
-                        counts.edge += 1
-                    }
+    /// The share of an n × n grid of points in each pixel that the test holds.
+    fileprivate static func sampled(_ width: Cardinal, _ height: Cardinal, grid: Int, _ holds: (Double, Double) -> Bool) -> Raster<Double> {
+        Raster(width: width, height: height) { x, y in
+            var inside = 0
+            (0..<grid).forEach { row in
+                (0..<grid).forEach { column in
+                    let point = (Double(Int(bitPattern: x)) + (Double(column) + 0.5) / Double(grid), Double(Int(bitPattern: y)) + (Double(row) + 0.5) / Double(grid))
+                    if holds(point.0, point.1) { inside += 1 }
                 }
             }
-            #expect(counts.inside > 500 && counts.outside > 500 && counts.edge > 80)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `inside and outside stay exact however the rows are cut, and no pixel leaves zero to one`(rule: Winding.Rule) throws {
-            /// A number in 0..<1 that depends on `index` alone.
-            func scatter(_ index: Int) -> Double {
-                let value = sin(Double(index) * 12.9898) * 43758.5453
-                return value - value.rounded(.down)
-            }
-            // A band from x ≈ 1 to x ≈ 21 whose left and right borders zigzag, with corners at uneven heights
-            // in every row. In the top row, where heights lie between 0 and 1, the heights of the bands a row is
-            // cut into do not add up to one without rounding.
-            var left: [Corner] = []
-            var right: [Corner] = []
-            (0...90).forEach { step in
-                left.append((0.5 + 1.4 * scatter(step), Double(step) / 3 - 2 + 0.3 * scatter(step + 500)))
-                right.append((20.5 + 2.4 * scatter(step + 1000), Double(step) / 3 - 2 + 0.3 * scatter(step + 1500)))
-            }
-            let band = Self.ring(left + right.reversed())
-            // A line there and back, and a sliver, inside the band: sides that lie on each other.
-            let hair = Self.ring([(3.3, 2.1), (17.9, 26.4)])
-            let twice = Self.ring([(4.1, 25.3), (18.2, 3.7), (18.2, 3.7), (4.1, 25.3), (18.2, 3.7)])
-            let shapes = [band, hair, twice]
-            let coverage = try Self.cover(Geo.Path(subpaths: shapes), rule, 26, 30)
-            let narrow = try Raster<Float>.coverage(of: Geo.Path(subpaths: shapes), rule: rule, width: 26, height: 30, tolerance: 0.01)
-            #expect(coverage.pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
-            #expect(narrow.pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
-            (0..<27).forEach { row in
-                (2..<20).forEach { column in
-                    #expect(coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))] == 1, "pixel (\(column), \(row))")
-                }
-                (23..<26).forEach { column in
-                    #expect(coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))] == 0, "pixel (\(column), \(row))")
-                }
-            }
-            #expect(try Self.cover(Geo.Path(subpaths: shapes.reversed()), rule, 26, 30) == coverage)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `band heights that do not add up without rounding still give exactly one and exactly zero`(rule: Winding.Rule) throws {
-            // The top row is cut at two heights. Added as they come, 0.323 + 0.599 + 0.078 is one unit in the
-            // last place short of 1; and 0.074 + 0.485 + 0.441, taken away again in another grouping, leaves one over.
-            try [(0.323, 0.922), (0.074, 0.559)].forEach { first, second in
-                let step = Self.ring([(-1, -1), (5, -1), (5, first), (6, first), (6, 3), (-1, 3)])
-                let apart = Self.ring([(9.2, second), (10.5, 2.5), (8.4, 2.2)])
-                let coverage = try Self.cover(Geo.Path(subpaths: [step, apart]), rule, 12, 3)
-                #expect(coverage[x: 2, y: 0] == 1, "cut at \(first) and \(second)")
-                #expect(coverage[x: 7, y: 0] == 0, "cut at \(first) and \(second)")
-                #expect(abs(coverage[x: 5, y: 0] - (1 - first)) < 1e-15)
-            }
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `the coverage adds up to the area, within the tolerance times the length of the curves`(rule: Winding.Rule) throws {
-            let radius = 20.3
-            let disc = Geo.Path(subpaths: [Self.circle(32.1, 30.7, radius: radius)])
-            let area = Double.pi * radius * radius
-            let coarse = abs(Self.sum(try Self.cover(disc, rule, 64, 64, tolerance: 0.05)) - area)
-            let fine = abs(Self.sum(try Self.cover(disc, rule, 64, 64, tolerance: 0.0005)) - area)
-            #expect(coarse <= 0.05 * 2 * Double.pi * radius)
-            #expect(fine <= 0.0005 * 2 * Double.pi * radius)
-            #expect(coarse > 0.01, "the coarse outline is a polygon, visibly smaller than the disc")
-
-            let triangle = Self.path([(2.3, 1.1), (17.9, 4.6), (6.2, 15.7)])
-            let cross: Double = (17.9 - 2.3) * (15.7 - 1.1) - (4.6 - 1.1) * (6.2 - 2.3)
-            let exact: Double = abs(cross) / 2
-            #expect(abs(Self.sum(try Self.cover(triangle, rule, 20, 20)) - exact) < 1e-9)
-        }
-
-        @Test
-        func `where shapes overlap, the rule decides: nonzero covers their union and evenodd leaves out what is covered twice`() throws {
-            let first = Self.box(1.25, 1.5, 5.5, 4.25)
-            let second = Self.box(3.5, 2.75, 7.25, 6.5)
-            let shared = Self.box(3.5, 2.75, 5.5, 4.25)
-            let a = Self.area(of: first, 9, 8)
-            let b = Self.area(of: second, 9, 8)
-            let both = Self.area(of: shared, 9, 8)
-            let union = Raster<Double>(width: 9, height: 8) { x, y in a[x: x, y: y] + b[x: x, y: y] - both[x: x, y: y] }
-            let once = Raster<Double>(width: 9, height: 8) { x, y in a[x: x, y: y] + b[x: x, y: y] - 2 * both[x: x, y: y] }
-            #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second), .nonzero, 9, 8), union))
-            #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second), .evenodd, 9, 8), once))
-            // Run the other way round, the second box takes the winding number back to zero where they overlap.
-            #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second.reversed()), .nonzero, 9, 8), once))
-            #expect(union[x: 4, y: 3] == 1 && once[x: 4, y: 3] == 0 && once[x: 3, y: 2] == 0.875)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `contours that cross inside a pixel are filled by area all the same`(rule: Winding.Rule) throws {
-            // Two triangles that meet at (4.3, 3.4), drawn as one contour that crosses itself there.
-            let bow = Self.path([(0.3, 0.4), (8.3, 6.4), (8.3, 0.4), (0.3, 6.4)])
-            let coverage = try Self.cover(bow, rule, 9, 7)
-            #expect(abs(Self.sum(coverage) - 24) < 1e-9)
-            let reference = Self.sampled(9, 7, grid: 16) { x, y in bow.contains(Self.at(x, y), rule: rule) }
-            #expect(`Raster Tests`.close(coverage, reference, within: 0.07))
-
-            // A five-pointed star drawn in one stroke: its middle has winding number two.
-            let points: [Corner] = (0..<5).map { index in
-                let angle = Double(index) * 4 * Double.pi / 5 - Double.pi / 2
-                return (16.2 + 15 * cos(angle), 16.7 + 15 * sin(angle))
-            }
-            let star = Self.path(points)
-            let inner = 15 * sin(Double.pi / 10) / cos(Double.pi / 5)
-            let pentagon = 5.0 / 2 * inner * inner * sin(2 * Double.pi / 5)
-            let tips = 5 * 15 * inner * sin(Double.pi / 5) - pentagon
-            let filled = Self.sum(try Self.cover(star, rule, 33, 33))
-            #expect(abs(filled - (rule == .nonzero ? tips + pentagon : tips)) < 1e-9)
-        }
-
-        @Test
-        func `the stroke outline of swift-geometry, whose pieces overlap, covers the stroked region under nonzero`() throws {
-            let run: [Corner] = [(6.3, 5.6), (16.3, 5.6), (16.3, 11.6), (8.3, 14.6), (15.3, 17.6), (15.3, 8.6), (3.3, 19.6)]
-            var segments: [Geo.Path.Segment] = []
-            run.indices.dropFirst().forEach { index in
-                segments.append(.line(.init(start: Self.at(run[index - 1].x, run[index - 1].y), end: Self.at(run[index].x, run[index].y))))
-            }
-            let line = Geo.Path(subpaths: [.init(startPoint: Self.at(run[0].x, run[0].y), segments: segments, isClosed: false)])
-            let outline = try line.stroked(.init(width: .init(3), join: .round, cap: .round), tolerance: 0.001)
-            let coverage = try Self.cover(outline, .nonzero, 24, 24, tolerance: 0.001)
-            var counts = (inside: 0, outside: 0)
-            (0..<24).forEach { row in
-                (0..<24).forEach { column in
-                    let away = Self.distance(Double(column) + 0.5, Double(row) + 0.5, to: run)
-                    let value = coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
-                    #expect(value >= 0 && value <= 1)
-                    if away < 1.5 - 0.72 {
-                        #expect(value == 1, "pixel (\(column), \(row))")
-                        counts.inside += 1
-                    } else if away > 1.5 + 0.72 {
-                        #expect(value == 0, "pixel (\(column), \(row))")
-                        counts.outside += 1
-                    }
-                }
-            }
-            #expect(counts.inside > 40 && counts.outside > 150)
-            let reference = Self.sampled(24, 24, grid: 16) { x, y in Self.distance(x, y, to: run) < 1.5 }
-            #expect(`Raster Tests`.close(coverage, reference, within: 0.07))
-            #expect(abs(Self.sum(coverage) - Self.sum(reference)) < 0.005 * Self.sum(reference))
-
-            // A corner with a miter join: two quadrilaterals and the join overlap, and together make an L.
-            let bend = Geo.Path(subpaths: [
-                .init(
-                    startPoint: Self.at(2.5, 2.5),
-                    segments: [
-                        .line(.init(start: Self.at(2.5, 2.5), end: Self.at(8.5, 2.5))),
-                        .line(.init(start: Self.at(8.5, 2.5), end: Self.at(8.5, 8.5))),
-                    ],
-                    isClosed: false
-                )
-            ])
-            let mitred = try bend.stroked(.init(width: .init(2), join: .miter(limit: 4), cap: .butt), tolerance: 0.01)
-            let across = Self.area(of: Self.box(2.5, 1.5, 9.5, 3.5), 11, 10)
-            let down = Self.area(of: Self.box(7.5, 1.5, 9.5, 8.5), 11, 10)
-            let corner = Self.area(of: Self.box(7.5, 1.5, 9.5, 3.5), 11, 10)
-            let expected = Raster<Double>(width: 11, height: 10) { x, y in across[x: x, y: y] + down[x: x, y: y] - corner[x: x, y: y] }
-            #expect(`Raster Tests`.close(try Self.cover(mitred, .nonzero, 11, 10), expected, within: 1e-9))
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `two shapes that only share a border cover together what their union covers`(rule: Winding.Rule) throws {
-            let corners: [Corner] = [(1.3, 0.9), (10.7, 2.2), (9.4, 10.6), (0.8, 8.1)]
-            let upper = try Self.cover(Self.path([corners[0], corners[1], corners[2]]), rule, 12, 12)
-            let lower = try Self.cover(Self.path([corners[0], corners[2], corners[3]]), rule, 12, 12)
-            let whole = try Self.cover(Self.path(corners), rule, 12, 12)
-            let added = upper.zip(lower, +) ?? upper
-            #expect(`Raster Tests`.close(added, whole))
-            #expect(whole[x: 5, y: 5] == 1 && upper[x: 5, y: 5] > 0 && lower[x: 5, y: 5] > 0)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `a path partly or wholly off the raster is clipped to it`(rule: Winding.Rule) throws {
-            let partly = try Self.cover(Self.path(Self.box(-3.5, -10, 2.5, 1.5)), rule, 4, 3)
-            #expect(partly.pixels == [1, 1, 0.5, 0, 0.5, 0.5, 0.25, 0, 0, 0, 0, 0])
-            let zeros = [Double](repeating: 0, count: 12)
-            #expect(try Self.cover(Self.path(Self.box(10, 10, 20, 20)), rule, 4, 3).pixels == zeros)
-            #expect(try Self.cover(Self.path(Self.box(-50, -50, -40, 40)), rule, 4, 3).pixels == zeros)
-            #expect(try Self.cover(Self.path(Self.box(-50, -50, 40, -40)), rule, 4, 3).pixels == zeros)
-            #expect(try Self.cover(Self.path(Self.box(-1e30, -1e30, 1e30, 1e30)), rule, 4, 3).pixels == [Double](repeating: 1, count: 12))
-            #expect(try Self.cover(Self.path([(-1e300, -1e300), (1e300, -1e300), (0.5, 1e300)]), rule, 4, 3).pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
-            // A subpath with a corner that is not finite is left out; the others still fill.
-            let broken = Self.path([(0, 0), (.nan, 0), (0, 3)], [(0, 0), (.infinity, 0), (0, 3)], Self.box(1, 1, 3, 2))
-            #expect(try Self.cover(broken, rule, 4, 3).pixels == [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0])
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `a path that encloses nothing covers nothing`(rule: Winding.Rule) throws {
-            let zeros = [Double](repeating: 0, count: 20)
-            #expect(try Self.cover(Geo.Path(subpaths: []), rule, 5, 4).pixels == zeros)
-            let bare = Geo.Path(subpaths: [.init(startPoint: Self.at(2, 2), segments: [], isClosed: true)])
-            #expect(try Self.cover(bare, rule, 5, 4).pixels == zeros)
-            #expect(try Self.cover(Self.path([(0.5, 0.5), (4.5, 3.5)]), rule, 5, 4).pixels == zeros)
-            #expect(try Self.cover(Self.path([(0.5, 1.5), (4.5, 1.5), (2.5, 1.5)]), rule, 5, 4).pixels == zeros)
-            let empty = try Self.cover(Self.path(Self.box(0, 0, 9, 9)), rule, 0, 4)
-            #expect(empty.isEmpty && empty.height == 4)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `the coverage does not depend on the order of the subpaths or on where each one starts`(rule: Winding.Rule) throws {
-            let rings: [Geo.Path.Subpath] = [
-                Self.ring([(0.3, 0.4), (8.3, 6.4), (8.3, 0.4), (0.3, 6.4)]),
-                Self.ring(Self.box(2.2, 1.7, 9.1, 7.3)),
-                Self.ring([(5.1, 0.2), (11.6, 5.9), (5.4, 11.3), (0.6, 5.5)]),
-                Self.circle(6.3, 5.8, radius: 4.1),
-                Self.ring(Self.box(2.2, 1.7, 9.1, 7.3).reversed()),
-            ]
-            let coverage = try Self.cover(Geo.Path(subpaths: rings), rule, 12, 12)
-            #expect(try Self.cover(Geo.Path(subpaths: rings.reversed()), rule, 12, 12) == coverage)
-            #expect(try Self.cover(Geo.Path(subpaths: [rings[3], rings[0], rings[4], rings[2], rings[1]]), rule, 12, 12) == coverage)
-            let turned = Self.ring([(8.3, 0.4), (0.3, 6.4), (0.3, 0.4), (8.3, 6.4)])
-            #expect(try Self.cover(Geo.Path(subpaths: [turned] + rings.dropFirst()), rule, 12, 12) == coverage)
-            #expect(Self.sum(coverage) > 30)
-        }
-
-        @Test(arguments: Winding.Rule.allCases)
-        func `the coverage of a region is that region of the whole raster's coverage`(rule: Winding.Rule) throws {
-            let shape = Geo.Path(subpaths: [
-                Self.ring([(0.3, 0.4), (14.3, 9.4), (14.3, 0.4), (0.3, 9.4)]),
-                Self.circle(7.7, 6.1, radius: 5.2),
-            ])
-            let whole = try Self.cover(shape, rule, 16, 12)
-            let region = Raster<Double>.Region(x: 3, y: 2, width: 9, height: 7)
-            let part = try Raster<Double>.coverage(of: shape, rule: rule, in: region, tolerance: 0.01)
-            let cropped = try whole.cropped(to: region)
-            #expect(part.width == 9 && part.height == 7)
-            #expect(`Raster Tests`.close(part, cropped))
-            let agree = part.zip(cropped) { ($0 == 1) == ($1 == 1) && ($0 == 0) == ($1 == 0) }
-            #expect(agree?.pixels.allSatisfy { $0 } == true)
-            #expect(cropped.pixels.contains(1) && cropped.pixels.contains(0))
-
-            // Nothing of the path lies outside the region that encloses its bounding box.
-            let bounds = try #require(shape.boundingBox)
-            let enclosing = Raster<Double>.Region(enclosing: bounds, width: 16, height: 12)
-            let within = try Raster<Double>.coverage(of: shape, rule: rule, in: enclosing, tolerance: 0.01)
-            #expect(abs(Self.sum(within) - Self.sum(whole)) < 1e-9)
-            #expect(Int(bitPattern: enclosing.width) < 16)
-        }
-
-        @Test
-        func `the region that encloses a rectangle is the whole pixels it touches, kept on the raster`() {
-            typealias Region = Raster<Double>.Region
-            func region(_ left: Double, _ top: Double, _ right: Double, _ bottom: Double) -> Region {
-                Region(enclosing: Geo.Rectangle(llx: .init(left), lly: .init(top), urx: .init(right), ury: .init(bottom)), width: 8, height: 6)
-            }
-            #expect(region(2.3, 1.2, 6.1, 4) == Region(x: 2, y: 1, width: 5, height: 3))
-            #expect(region(-5, -5, 2.5, 100) == Region(x: 0, y: 0, width: 3, height: 6))
-            #expect(region(3, 2, 3, 2) == Region(x: 3, y: 2, width: 0, height: 0))
-            #expect(region(20, 1, 30, 2).width == 0 && region(1, -9, 2, -3).height == 0)
-            #expect(region(.nan, .nan, .nan, .nan) == Region(x: 0, y: 0, width: 0, height: 0))
-            #expect(region(-1e30, -1e30, 1e30, 1e30) == Region(x: 0, y: 0, width: 8, height: 6))
-        }
-
-        @Test
-        func `a tolerance that is not positive and finite is refused`() {
-            let box = Self.path(Self.box(1, 1, 3, 3))
-            #expect(throws: Geo.Path.Error.tolerance) { try Self.cover(box, .nonzero, 4, 4, tolerance: 0) }
-            #expect(throws: Geo.Path.Error.tolerance) { try Self.cover(box, .evenodd, 4, 4, tolerance: .nan) }
+            return Double(inside) / Double(grid * grid)
         }
     }
-#endif
+
+    fileprivate static func sum(_ raster: Raster<Double>) -> Double { raster.reduce(0, +) }
+
+    /// The distance from a point to the nearest point of the straight run through the corners.
+    fileprivate static func distance(_ x: Double, _ y: Double, to corners: [Corner]) -> Double {
+        var best = Double.infinity
+        corners.indices.dropFirst().forEach { index in
+            let a = corners[index - 1]
+            let b = corners[index]
+            let chord = (x: b.x - a.x, y: b.y - a.y)
+            let squared = chord.x * chord.x + chord.y * chord.y
+            let along = squared > 0 ? min(max(((x - a.x) * chord.x + (y - a.y) * chord.y) / squared, 0), 1) : 0
+            let away = (x: x - a.x - along * chord.x, y: y - a.y - along * chord.y)
+            best = min(best, (away.x * away.x + away.y * away.y).squareRoot())
+        }
+        return best
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `a rectangle along the axes covers of each pixel exactly the area it overlaps`(rule: Winding.Rule) throws {
+        let box = Self.box(1.25, 0.5, 4.5, 2.75)
+        let expected = Self.area(of: box, 6, 4)
+        #expect(try Self.cover(Self.path(box), rule, 6, 4) == expected)
+        #expect(try Self.cover(Self.path(box.reversed()), rule, 6, 4) == expected)
+        #expect(expected[x: 1, y: 0] == 0.375 && expected[x: 4, y: 2] == 0.375 && expected[x: 2, y: 1] == 1 && expected[x: 5, y: 1] == 0)
+
+        let uneven = Self.box(0.1, 0.2, 2.3, 1.7)
+        #expect(`Raster Tests`.close(try Self.cover(Self.path(uneven), rule, 4, 3), Self.area(of: uneven, 4, 3), within: 1e-15))
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `a pixel wholly inside is exactly one and a pixel wholly outside exactly zero`(rule: Winding.Rule) throws {
+        let corners: [Corner] = [(3.1, 20.4), (18.7, 2.2), (37.3, 17.9), (21.6, 38.8)]
+        /// How far a point is on the inner side of the line through corner `index` and the next.
+        func side(_ index: Int, _ x: Double, _ y: Double) -> Double {
+            let a = corners[index]
+            let b = corners[(index + 1) % 4]
+            return (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+        }
+        let coverage = try Self.cover(Self.path(corners), rule, 40, 40)
+        let narrow = try Raster<Float>.coverage(of: Self.path(corners), rule: rule, width: 40, height: 40, tolerance: 0.01)
+        var counts = (inside: 0, outside: 0, edge: 0)
+        (0..<40).forEach { row in
+            (0..<40).forEach { column in
+                let squares = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map { (Double(column) + $0.0, Double(row) + $0.1) }
+                let within = (0..<4).allSatisfy { index in squares.allSatisfy { side(index, $0.0, $0.1) > 1e-9 } }
+                let beyond = (0..<4).contains { index in squares.allSatisfy { side(index, $0.0, $0.1) < -1e-9 } }
+                let value = coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
+                let single = narrow[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
+                if within {
+                    #expect(value == 1 && single == 1, "pixel (\(column), \(row))")
+                    counts.inside += 1
+                } else if beyond {
+                    #expect(value == 0 && single == 0, "pixel (\(column), \(row))")
+                    counts.outside += 1
+                } else {
+                    #expect(value >= 0 && value <= 1 && single >= 0 && single <= 1)
+                    #expect(abs(Double(single) - value) < 1e-6)
+                    counts.edge += 1
+                }
+            }
+        }
+        #expect(counts.inside > 500 && counts.outside > 500 && counts.edge > 80)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `inside and outside stay exact however the rows are cut, and no pixel leaves zero to one`(rule: Winding.Rule) throws {
+        /// A number in 0..<1 that depends on `index` alone.
+        func scatter(_ index: Int) -> Double {
+            let value = sin(Double(index) * 12.9898) * 43758.5453
+            return value - value.rounded(.down)
+        }
+        // A band from x ≈ 1 to x ≈ 21 whose left and right borders zigzag, with corners at uneven heights
+        // in every row. In the top row, where heights lie between 0 and 1, the heights of the bands a row is
+        // cut into do not add up to one without rounding.
+        var left: [Corner] = []
+        var right: [Corner] = []
+        (0...90).forEach { step in
+            left.append((0.5 + 1.4 * scatter(step), Double(step) / 3 - 2 + 0.3 * scatter(step + 500)))
+            right.append((20.5 + 2.4 * scatter(step + 1000), Double(step) / 3 - 2 + 0.3 * scatter(step + 1500)))
+        }
+        let band = Self.ring(left + right.reversed())
+        // A line there and back, and a sliver, inside the band: sides that lie on each other.
+        let hair = Self.ring([(3.3, 2.1), (17.9, 26.4)])
+        let twice = Self.ring([(4.1, 25.3), (18.2, 3.7), (18.2, 3.7), (4.1, 25.3), (18.2, 3.7)])
+        let shapes = [band, hair, twice]
+        let coverage = try Self.cover(Geo.Path(subpaths: shapes), rule, 26, 30)
+        let narrow = try Raster<Float>.coverage(of: Geo.Path(subpaths: shapes), rule: rule, width: 26, height: 30, tolerance: 0.01)
+        #expect(coverage.pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
+        #expect(narrow.pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
+        (0..<27).forEach { row in
+            (2..<20).forEach { column in
+                #expect(coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))] == 1, "pixel (\(column), \(row))")
+            }
+            (23..<26).forEach { column in
+                #expect(coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))] == 0, "pixel (\(column), \(row))")
+            }
+        }
+        #expect(try Self.cover(Geo.Path(subpaths: shapes.reversed()), rule, 26, 30) == coverage)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `band heights that do not add up without rounding still give exactly one and exactly zero`(rule: Winding.Rule) throws {
+        // The top row is cut at two heights. Added as they come, 0.323 + 0.599 + 0.078 is one unit in the
+        // last place short of 1; and 0.074 + 0.485 + 0.441, taken away again in another grouping, leaves one over.
+        try [(0.323, 0.922), (0.074, 0.559)].forEach { first, second in
+            let step = Self.ring([(-1, -1), (5, -1), (5, first), (6, first), (6, 3), (-1, 3)])
+            let apart = Self.ring([(9.2, second), (10.5, 2.5), (8.4, 2.2)])
+            let coverage = try Self.cover(Geo.Path(subpaths: [step, apart]), rule, 12, 3)
+            #expect(coverage[x: 2, y: 0] == 1, "cut at \(first) and \(second)")
+            #expect(coverage[x: 7, y: 0] == 0, "cut at \(first) and \(second)")
+            #expect(abs(coverage[x: 5, y: 0] - (1 - first)) < 1e-15)
+        }
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `the coverage adds up to the area, within the tolerance times the length of the curves`(rule: Winding.Rule) throws {
+        let radius = 20.3
+        let disc = Geo.Path(subpaths: [Self.circle(32.1, 30.7, radius: radius)])
+        let area = Double.pi * radius * radius
+        let coarse = abs(Self.sum(try Self.cover(disc, rule, 64, 64, tolerance: 0.05)) - area)
+        let fine = abs(Self.sum(try Self.cover(disc, rule, 64, 64, tolerance: 0.0005)) - area)
+        #expect(coarse <= 0.05 * 2 * Double.pi * radius)
+        #expect(fine <= 0.0005 * 2 * Double.pi * radius)
+        #expect(coarse > 0.01, "the coarse outline is a polygon, visibly smaller than the disc")
+
+        let triangle = Self.path([(2.3, 1.1), (17.9, 4.6), (6.2, 15.7)])
+        let cross: Double = (17.9 - 2.3) * (15.7 - 1.1) - (4.6 - 1.1) * (6.2 - 2.3)
+        let exact: Double = abs(cross) / 2
+        #expect(abs(Self.sum(try Self.cover(triangle, rule, 20, 20)) - exact) < 1e-9)
+    }
+
+    @Test
+    func `where shapes overlap, the rule decides: nonzero covers their union and evenodd leaves out what is covered twice`() throws {
+        let first = Self.box(1.25, 1.5, 5.5, 4.25)
+        let second = Self.box(3.5, 2.75, 7.25, 6.5)
+        let shared = Self.box(3.5, 2.75, 5.5, 4.25)
+        let a = Self.area(of: first, 9, 8)
+        let b = Self.area(of: second, 9, 8)
+        let both = Self.area(of: shared, 9, 8)
+        let union = Raster<Double>(width: 9, height: 8) { x, y in a[x: x, y: y] + b[x: x, y: y] - both[x: x, y: y] }
+        let once = Raster<Double>(width: 9, height: 8) { x, y in a[x: x, y: y] + b[x: x, y: y] - 2 * both[x: x, y: y] }
+        #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second), .nonzero, 9, 8), union))
+        #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second), .evenodd, 9, 8), once))
+        // Run the other way round, the second box takes the winding number back to zero where they overlap.
+        #expect(`Raster Tests`.close(try Self.cover(Self.path(first, second.reversed()), .nonzero, 9, 8), once))
+        #expect(union[x: 4, y: 3] == 1 && once[x: 4, y: 3] == 0 && once[x: 3, y: 2] == 0.875)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `contours that cross inside a pixel are filled by area all the same`(rule: Winding.Rule) throws {
+        // Two triangles that meet at (4.3, 3.4), drawn as one contour that crosses itself there.
+        let bow = Self.path([(0.3, 0.4), (8.3, 6.4), (8.3, 0.4), (0.3, 6.4)])
+        let coverage = try Self.cover(bow, rule, 9, 7)
+        #expect(abs(Self.sum(coverage) - 24) < 1e-9)
+        let reference = Self.sampled(9, 7, grid: 16) { x, y in bow.contains(Self.at(x, y), rule: rule) }
+        #expect(`Raster Tests`.close(coverage, reference, within: 0.07))
+
+        // A five-pointed star drawn in one stroke: its middle has winding number two.
+        let points: [Corner] = (0..<5).map { index in
+            let angle = Double(index) * 4 * Double.pi / 5 - Double.pi / 2
+            return (16.2 + 15 * cos(angle), 16.7 + 15 * sin(angle))
+        }
+        let star = Self.path(points)
+        let inner = 15 * sin(Double.pi / 10) / cos(Double.pi / 5)
+        let pentagon = 5.0 / 2 * inner * inner * sin(2 * Double.pi / 5)
+        let tips = 5 * 15 * inner * sin(Double.pi / 5) - pentagon
+        let filled = Self.sum(try Self.cover(star, rule, 33, 33))
+        #expect(abs(filled - (rule == .nonzero ? tips + pentagon : tips)) < 1e-9)
+    }
+
+    @Test
+    func `the stroke outline of swift-geometry, whose pieces overlap, covers the stroked region under nonzero`() throws {
+        let run: [Corner] = [(6.3, 5.6), (16.3, 5.6), (16.3, 11.6), (8.3, 14.6), (15.3, 17.6), (15.3, 8.6), (3.3, 19.6)]
+        var segments: [Geo.Path.Segment] = []
+        run.indices.dropFirst().forEach { index in
+            segments.append(.line(.init(start: Self.at(run[index - 1].x, run[index - 1].y), end: Self.at(run[index].x, run[index].y))))
+        }
+        let line = Geo.Path(subpaths: [.init(startPoint: Self.at(run[0].x, run[0].y), segments: segments, isClosed: false)])
+        let outline = try line.stroked(.init(width: .init(3), join: .round, cap: .round), tolerance: 0.001)
+        let coverage = try Self.cover(outline, .nonzero, 24, 24, tolerance: 0.001)
+        var counts = (inside: 0, outside: 0)
+        (0..<24).forEach { row in
+            (0..<24).forEach { column in
+                let away = Self.distance(Double(column) + 0.5, Double(row) + 0.5, to: run)
+                let value = coverage[x: Ordinal(UInt(column)), y: Ordinal(UInt(row))]
+                #expect(value >= 0 && value <= 1)
+                if away < 1.5 - 0.72 {
+                    #expect(value == 1, "pixel (\(column), \(row))")
+                    counts.inside += 1
+                } else if away > 1.5 + 0.72 {
+                    #expect(value == 0, "pixel (\(column), \(row))")
+                    counts.outside += 1
+                }
+            }
+        }
+        #expect(counts.inside > 40 && counts.outside > 150)
+        let reference = Self.sampled(24, 24, grid: 16) { x, y in Self.distance(x, y, to: run) < 1.5 }
+        #expect(`Raster Tests`.close(coverage, reference, within: 0.07))
+        #expect(abs(Self.sum(coverage) - Self.sum(reference)) < 0.005 * Self.sum(reference))
+
+        // A corner with a miter join: two quadrilaterals and the join overlap, and together make an L.
+        let bend = Geo.Path(subpaths: [
+            .init(
+                startPoint: Self.at(2.5, 2.5),
+                segments: [
+                    .line(.init(start: Self.at(2.5, 2.5), end: Self.at(8.5, 2.5))),
+                    .line(.init(start: Self.at(8.5, 2.5), end: Self.at(8.5, 8.5))),
+                ],
+                isClosed: false
+            )
+        ])
+        let mitred = try bend.stroked(.init(width: .init(2), join: .miter(limit: 4), cap: .butt), tolerance: 0.01)
+        let across = Self.area(of: Self.box(2.5, 1.5, 9.5, 3.5), 11, 10)
+        let down = Self.area(of: Self.box(7.5, 1.5, 9.5, 8.5), 11, 10)
+        let corner = Self.area(of: Self.box(7.5, 1.5, 9.5, 3.5), 11, 10)
+        let expected = Raster<Double>(width: 11, height: 10) { x, y in across[x: x, y: y] + down[x: x, y: y] - corner[x: x, y: y] }
+        #expect(`Raster Tests`.close(try Self.cover(mitred, .nonzero, 11, 10), expected, within: 1e-9))
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `two shapes that only share a border cover together what their union covers`(rule: Winding.Rule) throws {
+        let corners: [Corner] = [(1.3, 0.9), (10.7, 2.2), (9.4, 10.6), (0.8, 8.1)]
+        let upper = try Self.cover(Self.path([corners[0], corners[1], corners[2]]), rule, 12, 12)
+        let lower = try Self.cover(Self.path([corners[0], corners[2], corners[3]]), rule, 12, 12)
+        let whole = try Self.cover(Self.path(corners), rule, 12, 12)
+        let added = upper.zip(lower, +) ?? upper
+        #expect(`Raster Tests`.close(added, whole))
+        #expect(whole[x: 5, y: 5] == 1 && upper[x: 5, y: 5] > 0 && lower[x: 5, y: 5] > 0)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `a path partly or wholly off the raster is clipped to it`(rule: Winding.Rule) throws {
+        let partly = try Self.cover(Self.path(Self.box(-3.5, -10, 2.5, 1.5)), rule, 4, 3)
+        #expect(partly.pixels == [1, 1, 0.5, 0, 0.5, 0.5, 0.25, 0, 0, 0, 0, 0])
+        let zeros = [Double](repeating: 0, count: 12)
+        #expect(try Self.cover(Self.path(Self.box(10, 10, 20, 20)), rule, 4, 3).pixels == zeros)
+        #expect(try Self.cover(Self.path(Self.box(-50, -50, -40, 40)), rule, 4, 3).pixels == zeros)
+        #expect(try Self.cover(Self.path(Self.box(-50, -50, 40, -40)), rule, 4, 3).pixels == zeros)
+        #expect(try Self.cover(Self.path(Self.box(-1e30, -1e30, 1e30, 1e30)), rule, 4, 3).pixels == [Double](repeating: 1, count: 12))
+        #expect(try Self.cover(Self.path([(-1e300, -1e300), (1e300, -1e300), (0.5, 1e300)]), rule, 4, 3).pixels.allSatisfy { $0 >= 0 && $0 <= 1 })
+        // A subpath with a corner that is not finite is left out; the others still fill.
+        let broken = Self.path([(0, 0), (.nan, 0), (0, 3)], [(0, 0), (.infinity, 0), (0, 3)], Self.box(1, 1, 3, 2))
+        #expect(try Self.cover(broken, rule, 4, 3).pixels == [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0])
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `a path that encloses nothing covers nothing`(rule: Winding.Rule) throws {
+        let zeros = [Double](repeating: 0, count: 20)
+        #expect(try Self.cover(Geo.Path(subpaths: []), rule, 5, 4).pixels == zeros)
+        let bare = Geo.Path(subpaths: [.init(startPoint: Self.at(2, 2), segments: [], isClosed: true)])
+        #expect(try Self.cover(bare, rule, 5, 4).pixels == zeros)
+        #expect(try Self.cover(Self.path([(0.5, 0.5), (4.5, 3.5)]), rule, 5, 4).pixels == zeros)
+        #expect(try Self.cover(Self.path([(0.5, 1.5), (4.5, 1.5), (2.5, 1.5)]), rule, 5, 4).pixels == zeros)
+        let empty = try Self.cover(Self.path(Self.box(0, 0, 9, 9)), rule, 0, 4)
+        #expect(empty.isEmpty && empty.height == 4)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `the coverage does not depend on the order of the subpaths or on where each one starts`(rule: Winding.Rule) throws {
+        let rings: [Geo.Path.Subpath] = [
+            Self.ring([(0.3, 0.4), (8.3, 6.4), (8.3, 0.4), (0.3, 6.4)]),
+            Self.ring(Self.box(2.2, 1.7, 9.1, 7.3)),
+            Self.ring([(5.1, 0.2), (11.6, 5.9), (5.4, 11.3), (0.6, 5.5)]),
+            Self.circle(6.3, 5.8, radius: 4.1),
+            Self.ring(Self.box(2.2, 1.7, 9.1, 7.3).reversed()),
+        ]
+        let coverage = try Self.cover(Geo.Path(subpaths: rings), rule, 12, 12)
+        #expect(try Self.cover(Geo.Path(subpaths: rings.reversed()), rule, 12, 12) == coverage)
+        #expect(try Self.cover(Geo.Path(subpaths: [rings[3], rings[0], rings[4], rings[2], rings[1]]), rule, 12, 12) == coverage)
+        let turned = Self.ring([(8.3, 0.4), (0.3, 6.4), (0.3, 0.4), (8.3, 6.4)])
+        #expect(try Self.cover(Geo.Path(subpaths: [turned] + rings.dropFirst()), rule, 12, 12) == coverage)
+        #expect(Self.sum(coverage) > 30)
+    }
+
+    @Test(arguments: Winding.Rule.allCases)
+    func `the coverage of a region is that region of the whole raster's coverage`(rule: Winding.Rule) throws {
+        let shape = Geo.Path(subpaths: [
+            Self.ring([(0.3, 0.4), (14.3, 9.4), (14.3, 0.4), (0.3, 9.4)]),
+            Self.circle(7.7, 6.1, radius: 5.2),
+        ])
+        let whole = try Self.cover(shape, rule, 16, 12)
+        let region = Raster<Double>.Region(x: 3, y: 2, width: 9, height: 7)
+        let part = try Raster<Double>.coverage(of: shape, rule: rule, in: region, tolerance: 0.01)
+        let cropped = try whole.cropped(to: region)
+        #expect(part.width == 9 && part.height == 7)
+        #expect(`Raster Tests`.close(part, cropped))
+        let agree = part.zip(cropped) { ($0 == 1) == ($1 == 1) && ($0 == 0) == ($1 == 0) }
+        #expect(agree?.pixels.allSatisfy { $0 } == true)
+        #expect(cropped.pixels.contains(1) && cropped.pixels.contains(0))
+
+        // Nothing of the path lies outside the region that encloses its bounding box.
+        let bounds = try #require(shape.boundingBox)
+        let enclosing = Raster<Double>.Region(enclosing: bounds, width: 16, height: 12)
+        let within = try Raster<Double>.coverage(of: shape, rule: rule, in: enclosing, tolerance: 0.01)
+        #expect(abs(Self.sum(within) - Self.sum(whole)) < 1e-9)
+        #expect(Int(bitPattern: enclosing.width) < 16)
+    }
+
+    @Test
+    func `the region that encloses a rectangle is the whole pixels it touches, kept on the raster`() {
+        typealias Region = Raster<Double>.Region
+        func region(_ left: Double, _ top: Double, _ right: Double, _ bottom: Double) -> Region {
+            Region(enclosing: Geo.Rectangle(llx: .init(left), lly: .init(top), urx: .init(right), ury: .init(bottom)), width: 8, height: 6)
+        }
+        #expect(region(2.3, 1.2, 6.1, 4) == Region(x: 2, y: 1, width: 5, height: 3))
+        #expect(region(-5, -5, 2.5, 100) == Region(x: 0, y: 0, width: 3, height: 6))
+        #expect(region(3, 2, 3, 2) == Region(x: 3, y: 2, width: 0, height: 0))
+        #expect(region(20, 1, 30, 2).width == 0 && region(1, -9, 2, -3).height == 0)
+        #expect(region(.nan, .nan, .nan, .nan) == Region(x: 0, y: 0, width: 0, height: 0))
+        #expect(region(-1e30, -1e30, 1e30, 1e30) == Region(x: 0, y: 0, width: 8, height: 6))
+    }
+
+    @Test
+    func `a tolerance that is not positive and finite is refused`() {
+        let box = Self.path(Self.box(1, 1, 3, 3))
+        #expect(throws: Geo.Path.Error.tolerance) { try Self.cover(box, .nonzero, 4, 4, tolerance: 0) }
+        #expect(throws: Geo.Path.Error.tolerance) { try Self.cover(box, .evenodd, 4, 4, tolerance: .nan) }
+    }
+}
 
 extension `Raster Tests` {
     @Suite
